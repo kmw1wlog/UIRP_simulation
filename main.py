@@ -2,102 +2,10 @@ import json
 import datetime
 from typing import Dict, List, Any, Tuple
 
-
-class Task:
-
-    def __init__(self, properties: Dict[str, Any]):
-        self.properties = properties
-        # === Local variables ===
-        self.workload: float = properties.get("workload", 0.0)
-        self.bandwidth: float = properties.get("bandwidth", 0.0)
-        self.budget: float = properties.get("budget", float("inf"))
-        dl = properties.get("deadline")
-        self.deadline: datetime.datetime = (
-            datetime.datetime.fromisoformat(dl) if isinstance(dl, str) else dl
-        )
-
-class Tasks:
-    """Task 컨테이너 (dict)"""
-    def __init__(self):
-        # Local variable: {task_id: Task}
-        self.tasks: Dict[str, Task] = {}
-    # -------------------- Public API -------------------------------------
-    def initialize_from_data(self, data: List[Dict[str, Any]]) -> None:
-        """리스트 형태의 원시 dict 로부터 Task 객체 생성"""
-        for item in data:
-            tid = item.get("id")
-            if tid is None:
-                raise ValueError("Task item must have an 'id' field")
-            self.tasks[tid] = Task(item)
-    # -------------------- Convenience ------------------------------------
-    def __iter__(self):
-        return iter(self.tasks.values())
-
-    def __getitem__(self, item):
-        return self.tasks[item]
-
-class Provider:
-    """GPU 제공자 노드"""
-    def __init__(self, properties: Dict[str, Any]):
-        self.properties = properties
-        # === Local variables ===
-        self.throughput: float = properties.get("throughput", 1.0)  # (GPU‑hour processed)/hour/GPU
-        self.available_hours: List[Tuple[str, str]] = properties.get("available_hours", [])
-        self.price_per_gpu_hour: float = properties.get("price", 0.0)
-        self.bandwidth: float = properties.get("bandwidth", 0.0)
-        # 스케줄: (task_id, start, finish)
-        self.schedule: List[Tuple[str, datetime.datetime, datetime.datetime]] = []
-    # ------------------------ Scheduling Helpers -------------------------
-    def earliest_available(self, duration_h: float) -> datetime.datetime | None:
-        """duration_h 만큼 연속으로 작업 가능한 가장 빠른 시작 시각 반환"""
-        intervals = [
-            (
-                datetime.datetime.fromisoformat(s),
-                datetime.datetime.fromisoformat(e),
-            )
-            for s, e in self.available_hours
-        ]
-        intervals.sort(key=lambda t: t[0])
-
-        # (t1, t2 , t3  ... )  (true, false, true ... )
-        t_list = [datetime.datetime.now()]
-        avail_list = [False]
-
-        for start, end in intervals:
-            t_list.append(start)
-            t_list.append(end)
-            avail_list.append(True)
-            avail_list.append(False)
-
-        for index, (t, avail) in enumerate(zip(t_list, avail_list)):
-            if avail:
-                print("여유시간: ", t_list[index+1] - t)
-                if (t_list[index + 1] - t).total_seconds() / 3600.0 > duration_h:
-                    return
+from providers import providers
+from tasks import tasks
 
 
-
-
-
-            # 가능할떄만 current 던지기
-        return None  # 슬롯 없음
-    def assign(self, task_id: str, start: datetime.datetime, duration_h: float) -> None:
-        finish = start + datetime.timedelta(hours=duration_h)
-        self.schedule.append((task_id, start, finish))
-class Providers:
-    """Provider 컨테이너 (list)"""
-    def __init__(self):
-        self.providers: List[Provider] = []
-
-    def initialize_from_data(self, data: List[Dict[str, Any]]) -> None:
-        for item in data:
-            self.providers.append(Provider(item))
-
-    def __iter__(self):
-        return iter(self.providers)
-
-    def __getitem__(self, item):
-        return self.providers[item]
 
 class Scheduler:
     """스케줄링 로직 (하드코딩 전략 + 가중치 인자)"""
