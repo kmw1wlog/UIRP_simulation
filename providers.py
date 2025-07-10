@@ -25,8 +25,8 @@ class Provider:
             except Exception as ex:
                 raise ValueError(f"Invalid available_hours format: {s}, {e}") from ex
 
-        # 스케줄 (task_id, start, finish)
-        self.schedule: List[Tuple[str, datetime.datetime, datetime.datetime]] = []
+        # 스케줄: (task_id, scene_id, start, finish)
+        self.schedule: List[Tuple[str, int, datetime.datetime, datetime.datetime]] = []
 
     def earliest_available(self, duration_h: float) -> Optional[datetime.datetime]:
         """예약된 시간 포함하여, 가장 빠른 사용 가능한 시작 시간 반환"""
@@ -38,9 +38,9 @@ class Provider:
 
             check_start = max(now, start)
             check_end = end
-            busy_slots = sorted([(s, f) for _, s, f in self.schedule if s < check_end and f > check_start])
+            # scene_id 포함으로 수정
+            busy_slots = sorted([(s, f) for _, _, s, f in self.schedule if s < check_end and f > check_start])
 
-            # 예약 간 간격 찾기
             candidate_start = check_start
             for res_start, res_end in busy_slots:
                 gap_h = (res_start - candidate_start).total_seconds() / 3600
@@ -48,27 +48,24 @@ class Provider:
                     return candidate_start
                 candidate_start = max(candidate_start, res_end)
 
-            # 마지막 예약 뒤도 확인
             if (check_end - candidate_start).total_seconds() / 3600 >= duration_h:
                 return candidate_start
 
         return None
 
-    def assign(self, task_id: str, start: datetime.datetime, duration_h: float) -> None:
+    def assign(self, task_id: str, scene_id: int, start: datetime.datetime, duration_h: float) -> None:
         """예약 추가 및 가용 시간 차감"""
         finish = start + datetime.timedelta(hours=duration_h)
-        self.schedule.append((task_id, start, finish))
+        self.schedule.append((task_id, scene_id, start, finish))
 
-        # available_hours에서 사용한 시간 제거
+        # available_hours 업데이트
         new_hours = []
         for avail_start, avail_end in self.available_hours:
             if finish <= avail_start or start >= avail_end:
                 new_hours.append((avail_start, avail_end))
             else:
-                # 앞쪽 남은 시간
                 if avail_start < start:
                     new_hours.append((avail_start, start))
-                # 뒤쪽 남은 시간
                 if finish < avail_end:
                     new_hours.append((finish, avail_end))
         self.available_hours = new_hours
@@ -89,6 +86,8 @@ class Providers:
     def __getitem__(self, index: int):
         return self.providers[index]
 
+
+# ==================== 테스트 코드 ====================
 
 if __name__ == "__main__":
     import pprint
@@ -121,17 +120,19 @@ if __name__ == "__main__":
         print(f"Provider {i + 1}")
         pprint.pprint(p.available_hours)
 
-    # 최초 예약 시도
+    # 첫 씬 예약 시도
     duration = 2.0
     earliest = providers[0].earliest_available(duration)
     print(f"\nProvider 1 earliest for {duration}h: {earliest}")
 
-    # 예약 실행
+    # 예약 실행: task_id="task_1", scene_id=0
     if earliest:
-        providers[0].assign("task_1", earliest, duration)
-        print(f"\nAfter assigning 'task_1' from {earliest}:")
+        providers[0].assign("task_1", scene_id=0, start=earliest, duration_h=duration)
+        print(f"\nAfter assigning 'task_1', scene 0 from {earliest}:")
         pprint.pprint(providers[0].available_hours)
+        print(f"Schedule:")
+        pprint.pprint(providers[0].schedule)
 
-    # 두 번째 예약 가능 시간 확인
+    # 두 번째 씬 예약 시도
     earliest2 = providers[0].earliest_available(duration)
     print(f"\nProvider 1 next earliest for {duration}h: {earliest2}")

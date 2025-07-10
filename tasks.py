@@ -1,12 +1,11 @@
-import json
 import datetime
-from typing import Dict, List, Any, Tuple
+from typing import Dict, List, Any, Tuple, Optional
 
 
 class Task:
-
     def __init__(self, properties: Dict[str, Any]):
         self.properties = properties
+
         # === Local variables ===
         self.global_file_size: float = properties.get("global_file_size", 0.0)
         self.scene_number: int = properties.get("scene_number", 1)
@@ -14,11 +13,19 @@ class Task:
         self.bandwidth: float = properties.get("bandwidth", 0.0)
         self.budget: float = properties.get("budget", float("inf"))
 
+        # 씬별 (시작 시간, Provider ID) 튜플
+        # 초기값: (None, None)
+        self.scene_allocation_data: List[Tuple[Optional[datetime.datetime], Optional[int]]] = [
+            (None, None) for _ in range(self.scene_number)
+        ]
 
+        # deadline
         dl = properties.get("deadline")
         self.deadline: datetime.datetime = (
             datetime.datetime.fromisoformat(dl) if isinstance(dl, str) else dl
         )
+
+        # 전체 시작 시간
         start = properties.get("start_time")
         self.start_time: datetime.datetime = (
             datetime.datetime.fromisoformat(start) if isinstance(start, str) else start
@@ -28,9 +35,8 @@ class Task:
 class Tasks:
     """Task 컨테이너 (dict)"""
     def __init__(self):
-        # Local variable: {task_id: Task}
         self.tasks: Dict[str, Task] = {}
-    # -------------------- Public API -------------------------------------
+
     def initialize_from_data(self, data: List[Dict[str, Any]]) -> None:
         """리스트 형태의 원시 dict 로부터 Task 객체 생성"""
         for item in data:
@@ -38,12 +44,15 @@ class Tasks:
             if tid is None:
                 raise ValueError("Task item must have an 'id' field")
             self.tasks[tid] = Task(item)
-    # -------------------- Convenience ------------------------------------
+
     def __iter__(self):
         return iter(self.tasks.values())
 
     def __getitem__(self, item):
         return self.tasks[item]
+
+
+# =================== 테스트 코드 ===================
 
 if __name__ == "__main__":
     # 샘플 데이터
@@ -77,14 +86,12 @@ if __name__ == "__main__":
     # 각 Task의 속성 출력
     for task in tasks:
         print("▶ Task Properties:")
-        print(f"  Global File Size: {task.global_file_size} (type: {type(task.global_file_size)})")
-        print(f"  Scene Number: {task.scene_number} (type: {type(task.scene_number)})")
-        print(f"  Scene Workload: {task.scene_workload} (type: {type(task.scene_workload)})")
-        print(f"  Bandwidth: {task.bandwidth} (type: {type(task.bandwidth)})")
-        print(f"  Budget: {task.budget} (type: {type(task.budget)})")
-        print(f"  Deadline: {task.deadline} (type: {type(task.deadline)})")
-        print(f"  Start Time: {task.start_time} (type: {type(task.start_time)})")
+        print(f"  Global File Size: {task.global_file_size}")
+        print(f"  Scene Number: {task.scene_number}")
+        print(f"  Scene Workload: {task.scene_workload}")
+        print(f"  Bandwidth: {task.bandwidth}")
+        print(f"  Budget: {task.budget}")
+        print(f"  Deadline: {task.deadline}")
+        print(f"  Start Time: {task.start_time}")
+        print(f"  Scene Allocation Data ({len(task.scene_allocation_data)} scenes): {task.scene_allocation_data}")
         print("-" * 60)
-
-
-
