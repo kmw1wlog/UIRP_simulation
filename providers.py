@@ -80,6 +80,9 @@ class Providers:
         for item in data:
             self.providers.append(Provider(item))
 
+    def __len__(self):
+        return len(self.providers)
+
     def __iter__(self):
         return iter(self.providers)
 

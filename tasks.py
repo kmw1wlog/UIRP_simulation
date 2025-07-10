@@ -7,6 +7,7 @@ class Task:
         self.properties = properties
 
         # === Local variables ===
+        self.id: str = properties["id"]
         self.global_file_size: float = properties.get("global_file_size", 0.0)
         self.scene_number: int = properties.get("scene_number", 1)
         self.scene_workload: float = properties.get("scene_workload", 0.0)
