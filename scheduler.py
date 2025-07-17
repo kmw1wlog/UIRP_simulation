@@ -130,3 +130,4 @@ class Scheduler:
             now += self.time_gap
 
         return self.results
+
