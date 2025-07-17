@@ -1,96 +1,78 @@
-# run_experiments.py
-"""
-여러 차례 무작위 config.json을 생성 → Simulator로 실행 → 성능 지표 집계.
-
-사용 예
-------
-$ python run_experiments.py --runs 20 --tasks 6 --providers 4 --seed 2025 --details 0
-"""
-import importlib
-import json
+# run_experiments.py  –  최종 안정판
+import importlib, json, tempfile, argparse, sys
 from pathlib import Path
 from statistics import mean
-import argparse
-import tempfile
 
-# --------------- 동적 import ----------------
-gen_config = importlib.import_module("gen_config")      # config 생성기
-sim_mod    = importlib.import_module("simulator")      # Simulator 포함
-Simulator  = sim_mod.Simulator
-Scheduler  = sim_mod.Scheduler
+gen_config = importlib.import_module("gen_config")
+Scheduler  = importlib.import_module("scheduler").Scheduler
+Simulator  = importlib.import_module("simulator").Simulator
 
-# --------------- 실험 루프 ------------------
-def run_batch(
-    runs: int = 10,
-    n_tasks: int = 5,
-    n_providers: int = 3,
-    seed: int = 42,
-    show_details: bool = True,
-) -> None:
-    """runs 번 반복 실행 후 메트릭 요약"""
-    all_makespan, all_idle, completed_rates = [], [], []
+def run_batch(runs: int, n_tasks: int, n_prov: int,
+              seed: int, details: bool) -> None:
+    mk_, idle_, comp_, cost_, obj_ = [], [], [], [], []
+    skipped = 0
 
     for i in range(runs):
-        # -------- config 생성 --------
-        cfg_path = Path(tempfile.gettempdir()) / f"cfg_{i}.json"
-        gen_config.generate_cfg(
-            n_tasks=n_tasks,
-            n_providers=n_providers,
-            seed=seed + i,
-            filepath=str(cfg_path),
-        )
+        cfg = Path(tempfile.gettempdir()) / f"cfg_{i}.json"
+        gen_config.generate_cfg(n_tasks, n_prov, seed + i, str(cfg))
 
-        # -------- 시뮬레이션 --------
-        sim = Simulator(str(cfg_path))
+        sim = Simulator(str(cfg))
         sim.schedule(Scheduler())
-        metrics = sim.evaluate()
 
-        # -------- 개별 결과 출력 --------
-        makespan  = metrics["makespan_h"]
-        idle      = metrics["overall_idle_ratio"]
-        task_stats = metrics["tasks"]
-        completed = sum(1 for v in task_stats.values() if v["completed"])
-        comp_rate = completed / len(task_stats)
+        # ---------- 스케줄 결과가 없으면 evaluate() 호출 X ----------
+        if not sim.results:
+            print(f"[{i+1:02}/{runs}] ⚠ 스케줄 할당 0건 → skip")
+            skipped += 1
+            print("-" * 60)
+            continue
 
-        header = f"[#{i:02}] makespan {makespan:.1f}h | idle {idle:.2%} | " \
-                 f"completed {completed}/{len(task_stats)} ({comp_rate:.0%})"
-        print(header)
+        try:
+            m = sim.evaluate()
+        except RuntimeError as e:
+            print(f"[{i+1:02}/{runs}] ⚠ evaluate 오류: {e} → skip")
+            skipped += 1
+            print("-" * 60)
+            continue
 
-        if show_details:
-            print(f"  ├─ config : {cfg_path}")
-            print("  ├─ schedule (task_id, scene, start, finish, provider_idx):")
+        # ---------- 메트릭 수집 ----------
+        mk_.append(mk := m["makespan_h"])
+        idle_.append(idle := m["overall_idle_ratio"])
+        comp_rate = sum(1 for v in m["tasks"].values() if v["completed"]) / len(m["tasks"])
+        comp_.append(comp_rate)
+        cost_.append(cost := m["total_cost"])
+        obj_.append(obj := m["objective_sum"])
+
+        hdr = (f"[{i+1:02}/{runs}] makespan {mk:.1f}h | idle {idle:.2%} | "
+               f"complete {comp_rate:.0%} | cost {cost:.1f} | obj {obj:.1f}")
+        print(hdr)
+
+        if details:
+            print("  ├─ schedule:")
             print(json.dumps(sim.results, default=str, indent=2, ensure_ascii=False))
             print("  ╰─ metrics:")
-            print(json.dumps(metrics, default=str, indent=2, ensure_ascii=False))
+            print(json.dumps(m, default=str, indent=2, ensure_ascii=False))
             print("-" * 80)
 
-        all_makespan.append(makespan)
-        all_idle.append(idle)
-        completed_rates.append(comp_rate)
+    # ---------- 요약 ----------
+    done = runs - skipped
+    print("\n=== Summary ===")
+    print(f"runs attempted       : {runs}")
+    print(f"runs succeeded       : {done}")
+    if done:
+        print(f"avg makespan (h)     : {mean(mk_):.2f}")
+        print(f"avg idle ratio       : {mean(idle_):.2%}")
+        print(f"avg completion       : {mean(comp_):.0%}")
+        print(f"avg cost ($)         : {mean(cost_):.1f}")
+        print(f"avg objective sum    : {mean(obj_):.1f}")
+    else:
+        print("모든 실험이 스케줄 실패")
 
-    # -------- 전체 요약 --------
-    if all_makespan:
-        print("\n=== Overall Summary ===")
-        print(f"runs                : {runs}")
-        print(f"avg makespan        : {mean(all_makespan):.1f} h")
-        print(f"avg idle ratio      : {mean(all_idle):.2%}")
-        print(f"avg completion rate : {mean(completed_rates):.0%}")
-
-# --------------- CLI ------------------------
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Simulator 배치 실험")
-    parser.add_argument("--runs", type=int, default=10, help="실험 반복 횟수")
-    parser.add_argument("--tasks", type=int, default=5, help="태스크 개수")
-    parser.add_argument("--providers", type=int, default=3, help="프로바이더 개수")
-    parser.add_argument("--seed", type=int, default=42, help="초기 난수 시드")
-    parser.add_argument("--details", type=int, default=1,
-                        help="1: 각 실험 세부 결과 전체 출력, 0: 요약만 출력")
-    args, _ = parser.parse_known_args()
-
-    run_batch(
-        runs=args.runs,
-        n_tasks=args.tasks,
-        n_providers=args.providers,
-        seed=args.seed,
-        show_details=bool(args.details),
-    )
+    pa = argparse.ArgumentParser(description="배치 실험")
+    pa.add_argument("--runs", type=int, default=10)
+    pa.add_argument("--tasks", type=int, default=5)
+    pa.add_argument("--providers", type=int, default=3)
+    pa.add_argument("--seed", type=int, default=42)
+    pa.add_argument("--details", type=int, default=1, help="1=세부 출력")
+    a, _ = pa.parse_known_args(sys.argv[1:])
+    run_batch(a.runs, a.tasks, a.providers, a.seed, bool(a.details))
