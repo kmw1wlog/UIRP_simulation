@@ -1,122 +1,155 @@
-# simulation.py
-import json
-import datetime
+
+from __future__ import annotations
+import json, datetime, sys, pprint
 from pathlib import Path
-from typing import Dict, Any, Tuple, List
+from typing import List, Tuple, Dict, Any
 
 from tasks import Tasks, Task
-from providers import Providers, Provider
-from scheduler import Scheduler
+from providers import Providers
+from scheduler import Scheduler, Assignment
+from objective import calc_objective
+from utils import merge_intervals
 
 
 class Simulator:
-    """
-    1) JSON 로부터 Tasks, Providers 생성
-    2) Scheduler (Earliest-Deadline-First, Provider별 throughput 사용)
-    3) evaluate() : 정량 메트릭 반환
-    """
+    """Wrapper = load → schedule → evaluate."""
 
-    # ---------------- init ----------------
+    # -------------------------------------------------------------
+    # construction
+    # -------------------------------------------------------------
     def __init__(self, config_path: str):
         cfg = json.loads(Path(config_path).read_text(encoding="utf-8"))
 
-        # 객체 초기화
+        # objects
         self.tasks = Tasks()
         self.tasks.initialize_from_data(cfg.get("tasks", []))
+
         self.providers = Providers()
         self.providers.initialize_from_data(cfg.get("providers", []))
 
-        # 결과: (task_id, scene_id, start, finish, provider_idx)
-        self.results: List[Tuple[str, int, datetime.datetime, datetime.datetime, int]] = []
+        self.results: List[Assignment] = []
 
-
-    # ------------- Scheduler --------------
+    # -------------------------------------------------------------
+    # scheduling
+    # -------------------------------------------------------------
     def schedule(self, scheduler: Scheduler):
+        """Run the supplied scheduler and store Allocation records."""
         self.results = scheduler.run(self.tasks, self.providers)
 
-
-    # --------------- Metrics --------------
-    def _task_missing_scenes(self, task: Task) -> List[int]:
+    # -------------------------------------------------------------
+    # evaluation helpers
+    # -------------------------------------------------------------
+    @staticmethod
+    def _missing_scenes(task: Task) -> List[int]:
         return [
             idx for idx, (st, _) in enumerate(task.scene_allocation_data) if st is None
         ]
 
-    # --------------- Metrics --------------
+    def _provider_idle_ratio(self) -> float:
+        """Weighted mean idle ratio across all providers."""
+        if not self.results:
+            return 1.0
+
+        # horizon across *all* allocations
+        all_s = min(r[2] for r in self.results)
+        all_f = max(r[3] for r in self.results)
+        horizon_h = (all_f - all_s).total_seconds() / 3600.0
+        if horizon_h <= 0:
+            return 1.0
+
+        # busy time per provider (union of intervals)
+        prov_busy_h: Dict[int, float] = {i: 0.0 for i in range(len(self.providers))}
+        for idx, prov in enumerate(self.providers):
+            intervals = [(s, f) for _, _, s, f in prov.schedule]
+            busy = merge_intervals(intervals)
+            prov_busy_h[idx] = sum(
+                (e - s).total_seconds() / 3600.0 for s, e in busy
+            )
+
+        total_busy = sum(prov_busy_h.values())
+        return max(0.0, 1.0 - total_busy / (horizon_h * len(self.providers)))
+
+    # -------------------------------------------------------------
+    # evaluation main
+    # -------------------------------------------------------------
     def evaluate(self) -> Dict[str, Any]:
-        """Task 가 미완료될 경우 completed=False · missing_scenes 리스트 추가"""
-        if not self.results:           # 스케줄 실패 or 비어 있을 때
-            raise RuntimeError("No scheduling result to evaluate")
+        if not self.results:
+            raise RuntimeError("schedule() has not been run or produced no results.")
 
-        task_stats: Dict[str, Dict[str, Any]] = {}
-        finished_records: List[Tuple] = []
+        task_stats: Dict[str, Any] = {}
+        finished_records: List[Assignment] = []
+        objective_sum = 0.0
+        total_cost = 0.0
 
+        # --- per-task metrics ------------------------------------
         for task in self.tasks:
             recs = [r for r in self.results if r[0] == task.id]
-            missing = self._task_missing_scenes(task)
+            missing = self._missing_scenes(task)
 
-            if missing:   # ★ 모든 scene 배정이 안 된 경우
+            task_cost = sum(
+                (r[3] - r[2]).total_seconds() / 3600.0
+                * self.providers[r[4]].price_per_gpu_hour
+                for r in recs
+            )
+            total_cost += task_cost
+
+            if missing:
+                # incomplete
                 task_stats[task.id] = {
                     "completed": False,
                     "missing_scenes": missing,
-                    "cost": sum(
-                        (r[3] - r[2]).total_seconds() / 3600.0 * self.providers[r[4]].price_per_gpu_hour
-                        for r in recs
-                    ),
+                    "cost": task_cost,
+                    "budget_ok": task_cost <= task.budget,
                 }
-                # 미완료 Task 는 makespan·idle 계산에서 제외
                 continue
 
-            # ---- 정상 완료 Task ----
-            starts   = [r[2] for r in recs]
+            # completed
+            starts = [r[2] for r in recs]
             finishes = [r[3] for r in recs]
-            finished_records.extend(recs)
-
             completion_h = (max(finishes) - min(starts)).total_seconds() / 3600.0
-            cost = sum(
-                (r[3] - r[2]).total_seconds() / 3600.0 * self.providers[r[4]].price_per_gpu_hour
-                for r in recs
-            )
+
+            # objective sum (scene-level)
+            for r in recs:
+                objective_sum += calc_objective(
+                    task, r[1], self.providers[r[4]]
+                )
 
             task_stats[task.id] = {
                 "completed": True,
                 "completion_h": completion_h,
-                "cost": cost,
-                "budget_ok": cost <= task.budget,
+                "cost": task_cost,
+                "budget_ok": task_cost <= task.budget,
                 "deadline_ok": max(finishes) <= task.deadline,
             }
+            finished_records.extend(recs)
 
-        # ---- 전체 메트릭 (완료된 Task 기준) ----
-        if finished_records:
-            all_start = min(r[2] for r in finished_records)
-            all_end   = max(r[3] for r in finished_records)
-            horizon_h = (all_end - all_start).total_seconds() / 3600.0
-
-            busy_h = sum(
-                (r[3] - r[2]).total_seconds() / 3600.0 for r in finished_records
-            )
-            idle_ratio = 1.0 - busy_h / (horizon_h * len(self.providers))
-        else:
-            # 아무 Task 도 완료되지 못한 극단 상황
-            horizon_h = 0.0
-            idle_ratio = 1.0
+        # --- global KPIs -----------------------------------------
+        makespan_h = (
+            (max(r[3] for r in finished_records) - min(r[2] for r in finished_records)
+             ).total_seconds() / 3600.0
+            if finished_records
+            else 0.0
+        )
+        idle_ratio = self._provider_idle_ratio()
 
         return {
             "tasks": task_stats,
-            "makespan_h": horizon_h,
+            "makespan_h": makespan_h,
             "overall_idle_ratio": idle_ratio,
+            "total_cost": total_cost,
+            "objective_sum": objective_sum,
         }
 
 
-# ---------------- CLI ----------------
+# -------------------------------------------------------------
+# simple CLI
+# -------------------------------------------------------------
 if __name__ == "__main__":
-    import sys, pprint
-    cfg = sys.argv[1] if len(sys.argv) > 1 else "config.json"
+    cfg_path = sys.argv[1] if len(sys.argv) > 1 else "config.json"
 
-    sim = Simulator(cfg)
-    sch = Scheduler()
+    sim = Simulator(cfg_path)
+    sch = Scheduler()            # default weights & time_gap
     sim.schedule(sch)
     metrics = sim.evaluate()
 
-    print(sim.results)
-
-    pprint.pprint(metrics)
+    pprint.pprint(metrics, sort_dicts=False)
