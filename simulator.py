@@ -1,155 +1,95 @@
+# CLEAR
 
 from __future__ import annotations
-import json, datetime, sys, pprint
+import json, datetime, pprint, argparse
 from pathlib import Path
-from typing import List, Tuple, Dict, Any
-
+from typing import List, Dict, Any, Tuple
 from tasks import Tasks, Task
 from providers import Providers
-from scheduler import Scheduler, Assignment
+from scheduler import BaselineScheduler, Assignment
 from objective import calc_objective
 from utils import merge_intervals
 
-
 class Simulator:
-    """Wrapper = load → schedule → evaluate."""
-
-    # -------------------------------------------------------------
-    # construction
-    # -------------------------------------------------------------
-    def __init__(self, config_path: str):
-        cfg = json.loads(Path(config_path).read_text(encoding="utf-8"))
-
-        # objects
-        self.tasks = Tasks()
-        self.tasks.initialize_from_data(cfg.get("tasks", []))
-
-        self.providers = Providers()
-        self.providers.initialize_from_data(cfg.get("providers", []))
-
+    def __init__(self, cfg_path: str):
+        cfg = json.loads(Path(cfg_path).read_text())
+        self.tasks = Tasks();      self.tasks.initialize_from_data(cfg["tasks"])
+        self.providers = Providers(); self.providers.initialize_from_data(cfg["providers"])
         self.results: List[Assignment] = []
 
-    # -------------------------------------------------------------
-    # scheduling
-    # -------------------------------------------------------------
-    def schedule(self, scheduler: Scheduler):
-        """Run the supplied scheduler and store Allocation records."""
-        self.results = scheduler.run(self.tasks, self.providers)
+    def schedule(self, sch: BaselineScheduler):
+        self.results = sch.run(self.tasks, self.providers)
 
-    # -------------------------------------------------------------
-    # evaluation helpers
-    # -------------------------------------------------------------
     @staticmethod
-    def _missing_scenes(task: Task) -> List[int]:
-        return [
-            idx for idx, (st, _) in enumerate(task.scene_allocation_data) if st is None
-        ]
+    def _missing(task: Task) -> List[int]:
+        return [i for i, (st, _) in enumerate(task.scene_allocation_data) if st is None]
 
-    def _provider_idle_ratio(self) -> float:
-        """Weighted mean idle ratio across all providers."""
+    def _idle(self) -> float:
         if not self.results:
             return 1.0
+        s = min(r[2] for r in self.results)
+        f = max(r[3] for r in self.results)
+        horizon = (f - s).total_seconds() / 3600
+        prov_busy = {i: 0.0 for i in range(len(self.providers))}
+        for i, p in enumerate(self.providers):
+            busy = merge_intervals([(st, ft) for _, _, st, ft in p.schedule])  # 1. 사용될 일이 있나? 
+            prov_busy[i] = sum((b2 - b1).total_seconds() / 3600 for b1, b2 in busy)
+        return max(0.0, 1.0 - sum(prov_busy.values()) / (horizon * len(self.providers)))
 
-        # horizon across *all* allocations
-        all_s = min(r[2] for r in self.results)
-        all_f = max(r[3] for r in self.results)
-        horizon_h = (all_f - all_s).total_seconds() / 3600.0
-        if horizon_h <= 0:
-            return 1.0
-
-        # busy time per provider (union of intervals)
-        prov_busy_h: Dict[int, float] = {i: 0.0 for i in range(len(self.providers))}
-        for idx, prov in enumerate(self.providers):
-            intervals = [(s, f) for _, _, s, f in prov.schedule]
-            busy = merge_intervals(intervals)
-            prov_busy_h[idx] = sum(
-                (e - s).total_seconds() / 3600.0 for s, e in busy
-            )
-
-        total_busy = sum(prov_busy_h.values())
-        return max(0.0, 1.0 - total_busy / (horizon_h * len(self.providers)))
-
-    # -------------------------------------------------------------
-    # evaluation main
-    # -------------------------------------------------------------
     def evaluate(self) -> Dict[str, Any]:
         if not self.results:
-            raise RuntimeError("schedule() has not been run or produced no results.")
+            raise RuntimeError("schedule() 먼저 호출 필요")
 
-        task_stats: Dict[str, Any] = {}
-        finished_records: List[Assignment] = []
-        objective_sum = 0.0
-        total_cost = 0.0
+        tasks_out: Dict[str, Any] = {}
+        finished: List[Assignment] = []
+        tot_cost = tot_obj = 0.0
 
-        # --- per-task metrics ------------------------------------
-        for task in self.tasks:
-            recs = [r for r in self.results if r[0] == task.id]
-            missing = self._missing_scenes(task)
+        for t in self.tasks:
+            rec = [r for r in self.results if r[0] == t.id]
+            miss = self._missing(t)
+            cost = sum((r[3] - r[2]).total_seconds() / 3600 *
+                       self.providers[r[4]].price_per_gpu_hour for r in rec)
+            tot_cost += cost
 
-            task_cost = sum(
-                (r[3] - r[2]).total_seconds() / 3600.0
-                * self.providers[r[4]].price_per_gpu_hour
-                for r in recs
-            )
-            total_cost += task_cost
-
-            if missing:
-                # incomplete
-                task_stats[task.id] = {
-                    "completed": False,
-                    "missing_scenes": missing,
-                    "cost": task_cost,
-                    "budget_ok": task_cost <= task.budget,
-                }
+            if miss:
+                tasks_out[t.id] = {"completed": False,
+                                   "missing": miss,
+                                   "cost": cost,
+                                   "budget_ok": cost <= t.budget}
                 continue
 
-            # completed
-            starts = [r[2] for r in recs]
-            finishes = [r[3] for r in recs]
-            completion_h = (max(finishes) - min(starts)).total_seconds() / 3600.0
-
-            # objective sum (scene-level)
-            for r in recs:
-                objective_sum += calc_objective(
-                    task, r[1], self.providers[r[4]]
-                )
-
-            task_stats[task.id] = {
+            starts = [r[2] for r in rec]; finishes = [r[3] for r in rec]
+            for r in rec:
+                tot_obj += calc_objective(t, r[1], self.providers[r[4]], scene_start=r[2])
+            tasks_out[t.id] = {
                 "completed": True,
-                "completion_h": completion_h,
-                "cost": task_cost,
-                "budget_ok": task_cost <= task.budget,
-                "deadline_ok": max(finishes) <= task.deadline,
+                "completion_h": (max(finishes) - min(starts)).total_seconds() / 3600,
+                "cost": cost,
+                "budget_ok": cost <= t.budget,
+                "deadline_ok": max(finishes) <= t.deadline,
             }
-            finished_records.extend(recs)
+            finished += rec
 
-        # --- global KPIs -----------------------------------------
-        makespan_h = (
-            (max(r[3] for r in finished_records) - min(r[2] for r in finished_records)
-             ).total_seconds() / 3600.0
-            if finished_records
-            else 0.0
-        )
-        idle_ratio = self._provider_idle_ratio()
+        makespan = ((max(r[3] for r in finished) - min(r[2] for r in finished)).total_seconds() / 3600
+                    if finished else 0.0)
 
-        return {
-            "tasks": task_stats,
-            "makespan_h": makespan_h,
-            "overall_idle_ratio": idle_ratio,
-            "total_cost": total_cost,
-            "objective_sum": objective_sum,
-        }
+        return {"tasks": tasks_out,
+                "makespan_h": makespan,
+                "overall_idle_ratio": self._idle(),
+                "total_cost": tot_cost,
+                "objective_sum": tot_obj}
 
-
-# -------------------------------------------------------------
-# simple CLI
-# -------------------------------------------------------------
+# ---------------- CLI ----------------
 if __name__ == "__main__":
-    cfg_path = sys.argv[1] if len(sys.argv) > 1 else "config.json"
+    pa = argparse.ArgumentParser()
+    pa.add_argument("--config", default="config.json")
+    pa.add_argument("--algo",   default="bf", help="bf | cp")
+    pa.add_argument("-v", action="count", default=0, help="-v / -vv for verbose")
+    args = pa.parse_args()
 
-    sim = Simulator(cfg_path)
-    sch = Scheduler()            # default weights & time_gap
+    sim = Simulator(args.config)
+    sch = BaselineScheduler(algo=args.algo,
+                            verbose=args.v >= 1,
+                            time_gap=datetime.timedelta(hours=1))
     sim.schedule(sch)
-    metrics = sim.evaluate()
-
-    pprint.pprint(metrics, sort_dicts=False)
+    pprint.pprint(sim.evaluate(), sort_dicts=False)
