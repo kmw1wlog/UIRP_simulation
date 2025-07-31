@@ -7,7 +7,7 @@ from typing import Protocol, Optional, List, Tuple
 
 from Model.tasks import Tasks
 from Model.providers import Providers
-from Core.Scheduler.baseline_scheduler_modular import BaselineScheduler as _BaselineScheduler
+from Core.Scheduler.scheduler import BaselineScheduler as _BaselineScheduler
 
 # ---------- 공통 Assignment 형식 ----------
 Assignment = Tuple[str, int, datetime.datetime, datetime.datetime, int]
