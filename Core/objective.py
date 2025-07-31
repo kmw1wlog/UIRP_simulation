@@ -25,6 +25,7 @@ def calc_objective(
     scene_start 가 굳이 필요 없으면 무시하고,
     나중에 시간 의존 패널티를 넣고 싶을 때 활용할 수 있습니다.
     """
+    weights = weights or DEFAULT_WEIGHTS
     a1, a2, a3, b1, b2 = weights
     size = task.global_file_size + task.scene_size(scene_id)
     rate = min(task.bandwidth, prov.bandwidth)

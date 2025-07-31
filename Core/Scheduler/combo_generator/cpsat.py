@@ -12,25 +12,15 @@ try:
                 m.Add(sum(x[s]) == 1)
 
             big = 10**7
-            dur = [[0] * P for _ in range(S)]
-            cost = [[0] * P for _ in range(S)]
+            objective_terms = []
             for s in range(S):
                 for p in range(P):
-                    d, c = ev.time_cost(t, s, ps[p])
-                    dur[s][p] = big if math.isinf(d) else int(d * 3600)
-                    cost[s][p] = big if math.isinf(c) else int(c * 100)
+                    obj = ev.efficiency(t, [p if i == s else 0 for i in range(S)], ps)  # crude 1-hot eval
+                    score = int(-obj * 1000) if math.isfinite(obj) else big
+                    objective_terms.append(score * x[s][p])
 
-            makespan = m.NewIntVar(0, big, "mk")
-            for p in range(P):
-                tot = m.NewIntVar(0, big, f"tot{p}")
-                m.Add(tot == sum(dur[s][p] * x[s][p] for s in range(S)))
-                m.Add(tot <= makespan)
+            m.Minimize(sum(objective_terms))
 
-            total_cost = sum(cost[s][p] * x[s][p] for s in range(S) for p in range(P))
-            m.Add(total_cost <= int(t.budget * 100))
-            m.Add(makespan <= int((t.deadline - now).total_seconds()))
-
-            m.Minimize(makespan)
             slv = cp_model.CpSolver()
             if verbose:
                 slv.parameters.log_search_progress = True
@@ -40,7 +30,7 @@ try:
             if st not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
                 return None
             cmb = [next(p for p in range(P) if slv.BooleanValue(x[s][p])) for s in range(S)]
-            return cmb, slv.Value(makespan) / 3600, slv.Value(total_cost) / 100
+            return cmb, 0.0, 0.0  # t_tot, cost ignored here
 
 except ImportError:
     CPSatComboGenerator = None

@@ -2,13 +2,14 @@ import math
 import datetime
 from typing import Dict, List
 from Core.Scheduler.interface import MetricEvaluator
+from Core.objective import calc_objective
 
 
 class BaselineEvaluator(MetricEvaluator):
     def __init__(self):
-        self._c: Dict[tuple, float] = {}
+        self._c: Dict[tuple, float] = {} # cache
 
-    def _t(self, t, s, p):
+    def _t(self, t, s, p): # 씬별 전송시간, 다중 씬 case 수정필요
         k = ("tx", t.id, s, p)
         if k in self._c:
             return self._c[k]
@@ -17,7 +18,7 @@ class BaselineEvaluator(MetricEvaluator):
         self._c[k] = v
         return v
 
-    def _cpt(self, t, p):
+    def _cpt(self, t, p): #
         k = ("cmp", t.id, p)
         if k in self._c:
             return self._c[k]
@@ -46,5 +47,12 @@ class BaselineEvaluator(MetricEvaluator):
             return False, t_tot, cost
         return True, t_tot, cost
 
-    def efficiency(self, t, t_tot, cost):
-        return 0.0 if t_tot <= 0 or cost <= 0 else (t.scene_number * t.scene_workload) / (cost * t_tot)
+    def efficiency(self, t, cmb: List[int], ps) -> float:
+        total = 0.0
+        for sid, pid in enumerate(cmb):
+            prov = ps[pid]
+            score = calc_objective(t, sid, prov)
+            if score == float("inf") or score != score:  # NaN 방지
+                return float("-inf")
+            total += score
+        return -total
