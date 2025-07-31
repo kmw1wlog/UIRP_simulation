@@ -2,8 +2,8 @@
 from __future__ import annotations
 from typing import Tuple
 import datetime
-from tasks import Task
-from providers import Provider
+from Model.tasks import Task
+from Model.providers import Provider
 
 DEFAULT_WEIGHTS: Tuple[float, float, float, float, float] = (
     1.0,    # a1 – total time

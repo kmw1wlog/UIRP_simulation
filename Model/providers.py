@@ -1,9 +1,9 @@
 #CLEAR
 
 from __future__ import annotations
-import datetime, math
+import datetime
 from typing import Dict, Any, List, Tuple, Optional
-from utils import merge_intervals
+from utils.utils import merge_intervals
 
 class Provider:
     def __init__(self, d: Dict[str, Any]):

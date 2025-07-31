@@ -6,8 +6,8 @@ import datetime, itertools, math
 from abc import ABC, abstractmethod
 from typing import List, Tuple, Dict, Optional, Sequence
 
-from tasks import Tasks, Task
-from providers import Providers, Provider
+from Model.tasks import Tasks, Task
+from Model.providers import Providers, Provider
 
 Assignment = Tuple[str, int, datetime.datetime, datetime.datetime, int]
 
@@ -46,6 +46,8 @@ class Dispatcher(ABC):
 # ----------------------------------------------------------------
 class FIFOTaskSelector(TaskSelector):
     def select(self, now, waiting): return list(waiting)
+
+
 
 class BaselineEvaluator(MetricEvaluator):
     def __init__(self): self._c: Dict[tuple, float] = {}

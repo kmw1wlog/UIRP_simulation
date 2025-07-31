@@ -3,12 +3,12 @@
 from __future__ import annotations
 import json, datetime, pprint, argparse
 from pathlib import Path
-from typing import List, Dict, Any, Tuple
-from tasks import Tasks, Task
-from providers import Providers
-from scheduler import BaselineScheduler, Assignment
-from objective import calc_objective
-from utils import merge_intervals
+from typing import List, Dict, Any
+from Model.tasks import Tasks, Task
+from Model.providers import Providers
+from Core.scheduler import BaselineScheduler, Assignment
+from Core.objective import calc_objective
+from utils.utils import merge_intervals
 
 class Simulator:
     def __init__(self, cfg_path: str):

@@ -152,14 +152,16 @@ python simulator.py path/to/config.json
 ## 7. Minimal Example
 
 ```python
-from tasks import Tasks
-from providers import Providers
-from scheduler import Scheduler
+from Model.tasks import Tasks
+from Model.providers import Providers
+from Core.scheduler import Scheduler
 import json
 
-cfg = json.loads(open("config.json").read())
-tasks     = Tasks();     tasks.initialize_from_data(cfg["tasks"])
-providers = Providers(); providers.initialize_from_data(cfg["providers"])
+cfg = json.loads(open("../config.json").read())
+tasks = Tasks();
+tasks.initialize_from_data(cfg["tasks"])
+providers = Providers();
+providers.initialize_from_data(cfg["providers"])
 
 scheduler = Scheduler(time_gap=datetime.timedelta(minutes=15))
 allocations = scheduler.run(tasks, providers)
