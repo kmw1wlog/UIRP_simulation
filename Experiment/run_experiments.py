@@ -1,78 +1,135 @@
-# run_experiments.py  –  최종 안정판
-import importlib, json, tempfile, argparse, sys
+
+"""
+run_experiment.py — 최신 스케줄러 스택 통합 실행기
+-------------------------------------------------
+• gen_config로 synthetic config 생성 (선택)
+• Simulator + BaselineScheduler(모듈 alias) 사용
+• detailed verbose logs를 파일에 저장 (--log-file)
+• 결과를 콘솔 및 JSON(옵션) 저장
+
+업로드된 코드베이스(baseline_scheduler_modular.py, simulator.py 등)와 완벽 호환되도록 작성.
+"""
+
+from __future__ import annotations
+import argparse, datetime, json, pprint, importlib, sys
 from pathlib import Path
-from statistics import mean
 
-gen_config = importlib.import_module("gen_config")
-Scheduler  = importlib.import_module("scheduler").Scheduler
-Simulator  = importlib.import_module("simulator").Simulator
+DEFAULT_BASE_DAY = datetime.datetime(2024, 1, 1, 6)
 
-def run_batch(runs: int, n_tasks: int, n_prov: int,
-              seed: int, details: bool) -> None:
-    mk_, idle_, comp_, cost_, obj_ = [], [], [], [], []
-    skipped = 0
+# ---------------------------------------------------------------------------
+# CLI 파싱
+# ---------------------------------------------------------------------------
 
-    for i in range(runs):
-        cfg = Path(tempfile.gettempdir()) / f"cfg_{i}.json"
-        gen_config.generate_cfg(n_tasks, n_prov, seed + i, str(cfg))
+def _parse_args(argv: list[str] | None = None):
+    pa = argparse.ArgumentParser(
+        description="End-to-end scheduling experiment runner (config 생성 + 시뮬 + 로그 저장)"
+    )
+    pa.add_argument("--config", help="기존 config.json 경로 (생략 시 --generate 필요)")
+    pa.add_argument(
+        "--generate",
+        action="store_true",
+        help="실행 전 synthetic config 생성(gen_config) 여부",
+    )
+    pa.add_argument("--tasks", type=int, default=5, help="--generate 시 Task 개수")
+    pa.add_argument(
+        "--providers", type=int, default=3, help="--generate 시 Provider 개수"
+    )
+    pa.add_argument("--seed", type=int, default=42, help="난수 시드")
+    pa.add_argument(
+        "--base-day",
+        type=str,
+        default=None,
+        help="기준일시 ISO (예: 2024-01-01T06:00:00)",
+    )
+    pa.add_argument(
+        "--out-config", default="config.json", help="--generate 출력 파일명"
+    )
+    pa.add_argument(
+        "--algo", default="bf", choices=["bf", "cp"],
+        help="BaselineScheduler 알고리즘: bf (Brute Force) 또는 cp (CP-SAT)"
+    )
+    pa.add_argument(
+        "--time-gap-h", type=int, default=1,
+        help="스케줄러 ticker 시간 간격 (hours)"
+    )
+    pa.add_argument(
+        "--result-out", default=None, help="평가 결과 JSON 저장 경로 (선택)"
+    )
+    pa.add_argument(
+        "--log-file", default=None,
+        help="상세 verbose 로그를 저장할 파일 경로 (선택)"
+    )
+    pa.add_argument("-v", action="count", default=0, help="-v: verbose, -vv: more verbose")
 
-        sim = Simulator(str(cfg))
-        sim.schedule(Scheduler())
+    args, _ = pa.parse_known_args(argv)
+    return args
 
-        # ---------- 스케줄 결과가 없으면 evaluate() 호출 X ----------
-        if not sim.results:
-            print(f"[{i+1:02}/{runs}] ⚠ 스케줄 할당 0건 → skip")
-            skipped += 1
-            print("-" * 60)
-            continue
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
-        try:
-            m = sim.evaluate()
-        except RuntimeError as e:
-            print(f"[{i+1:02}/{runs}] ⚠ evaluate 오류: {e} → skip")
-            skipped += 1
-            print("-" * 60)
-            continue
+def main():
+    args = _parse_args()
 
-        # ---------- 메트릭 수집 ----------
-        mk_.append(mk := m["makespan_h"])
-        idle_.append(idle := m["overall_idle_ratio"])
-        comp_rate = sum(1 for v in m["tasks"].values() if v["completed"]) / len(m["tasks"])
-        comp_.append(comp_rate)
-        cost_.append(cost := m["total_cost"])
-        obj_.append(obj := m["objective_sum"])
-
-        hdr = (f"[{i+1:02}/{runs}] makespan {mk:.1f}h | idle {idle:.2%} | "
-               f"complete {comp_rate:.0%} | cost {cost:.1f} | obj {obj:.1f}")
-        print(hdr)
-
-        if details:
-            print("  ├─ schedule:")
-            print(json.dumps(sim.results, default=str, indent=2, ensure_ascii=False))
-            print("  ╰─ metrics:")
-            print(json.dumps(m, default=str, indent=2, ensure_ascii=False))
-            print("-" * 80)
-
-    # ---------- 요약 ----------
-    done = runs - skipped
-    print("\n=== Summary ===")
-    print(f"runs attempted       : {runs}")
-    print(f"runs succeeded       : {done}")
-    if done:
-        print(f"avg makespan (h)     : {mean(mk_):.2f}")
-        print(f"avg idle ratio       : {mean(idle_):.2%}")
-        print(f"avg completion       : {mean(comp_):.0%}")
-        print(f"avg cost ($)         : {mean(cost_):.1f}")
-        print(f"avg objective sum    : {mean(obj_):.1f}")
+    # 1) config 준비 ---------------------------------------------------------
+    if args.generate:
+        base_day = (
+            datetime.datetime.fromisoformat(args.base_day)
+            if args.base_day
+            else DEFAULT_BASE_DAY
+        )
+        from gen_config import generate_cfg
+        generate_cfg(
+            args.tasks, args.providers, args.seed,
+            args.out_config, base_day
+        )
+        cfg_path = args.out_config
     else:
-        print("모든 실험이 스케줄 실패")
+        if not args.config:
+            raise SystemExit("--config 지정이 없으면 --generate 필요")
+        cfg_path = args.config
+
+    # 2) 모듈 alias 설정 -----------------------------------------------------
+    sched_mod = importlib.import_module("baseline_scheduler_modular")
+    sys.modules.setdefault("scheduler", sched_mod)
+
+    # 3) 시뮬 + 스케줄 --------------------------------------------------------
+    from simulator import Simulator
+    sim = Simulator(cfg_path)
+    BaselineScheduler = sched_mod.BaselineScheduler
+    sch = BaselineScheduler(
+        algo=args.algo,
+        verbose=(args.v >= 1),
+        time_gap=datetime.timedelta(hours=args.time_gap_h),
+    )
+
+    # 4) verbose 로그 파일 저장 설정 ----------------------------------------
+    log_enabled = False
+    if args.log_file and args.v >= 1:
+        log_fh = open(args.log_file, 'w', encoding='utf-8')
+        orig_out, orig_err = sys.stdout, sys.stderr
+        sys.stdout, sys.stderr = log_fh, log_fh
+        log_enabled = True
+
+    # schedule 호출 (verbose prints는 파일로)
+    sim.schedule(sch)
+
+    # 로그 복원 및 파일 닫기 -----------------------------------------------
+    if log_enabled:
+        sys.stdout, sys.stderr = orig_out, orig_err
+        log_fh.close()
+        print(f"✔ Detailed logs saved to {args.log_file}")
+
+    # 5) 결과 평가 및 출력 ---------------------------------------------------
+    res = sim.evaluate()
+    pprint.pprint(res, sort_dicts=False)
+
+    # 6) 결과 JSON 저장 -----------------------------------------------------
+    if args.result_out:
+        Path(args.result_out).write_text(
+            json.dumps(res, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        print(f"✔ Results written to {args.result_out}")
 
 if __name__ == "__main__":
-    pa = argparse.ArgumentParser(description="배치 실험")
-    pa.add_argument("--runs", type=int, default=10)
-    pa.add_argument("--tasks", type=int, default=5)
-    pa.add_argument("--providers", type=int, default=3)
-    pa.add_argument("--seed", type=int, default=42)
-    pa.add_argument("--details", type=int, default=1, help="1=세부 출력")
-    a, _ = pa.parse_known_args(sys.argv[1:])
-    run_batch(a.runs, a.tasks, a.providers, a.seed, bool(a.details))
+    main()
