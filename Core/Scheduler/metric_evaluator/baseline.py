@@ -14,7 +14,13 @@ class BaselineEvaluator(MetricEvaluator):
         if k in self._c:
             return self._c[k]
         bw = min(t.bandwidth, p.bandwidth)
-        v = float("inf") if bw <= 0 else (t.global_file_size + t.scene_size(s)) / bw / 3600
+        
+        # 글로벌 파일을 이미 받았으면 씬 파일만, 아니면 글로벌 + 씬 파일
+        file_size = t.scene_size(s)
+        if t.id not in p.received_global_files:
+            file_size += t.global_file_size
+            
+        v = float("inf") if bw <= 0 else file_size / bw / 3600
         self._c[k] = v
         return v
 

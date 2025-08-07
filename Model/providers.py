@@ -20,6 +20,9 @@ class Provider:
 
         # (task_id, scene_id, start, finish)
         self.schedule: List[Tuple[str, int, datetime.datetime, datetime.datetime]] = []
+        
+        # 글로벌 파일을 이미 받은 task들 추적
+        self.received_global_files: set = set()
 
     # ---------------------------------------------------
     # 메트릭
@@ -56,6 +59,9 @@ class Provider:
                start: datetime.datetime, dur_h: float):
         finish = start + datetime.timedelta(hours=dur_h)
         self.schedule.append((task_id, scene_id, start, finish))
+        
+        # 해당 task의 글로벌 파일을 받았다고 표시
+        self.received_global_files.add(task_id)
 
         # available_hours 업데이트(틈새 제거)
         new=[]
