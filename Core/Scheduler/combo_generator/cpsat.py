@@ -24,27 +24,49 @@ def _cap_now_hours_from_avail(prov, now: dt.datetime) -> float:
 
 def _build_common_model(t, ps, now):
     S, P = t.scene_number, len(ps)
-    TOT  = [[0.0]*P for _ in range(S)]
-    COST = [[0.0]*P for _ in range(S)]
+    TOT  = [[float("inf")]*P for _ in range(S)]
+    COST = [[float("inf")]*P for _ in range(S)]
     PROF = [[0.0]*P for _ in range(S)]
 
     cap_hours = [_cap_now_hours_from_avail(prov, now) for prov in ps]
+
+    # per-provider / per-scene transmission & compute times
+    tx_global = [float("inf")] * P
+    tx_scene  = [[float("inf")] * P for _ in range(S)]
+    cmp_scene = [[float("inf")] * P for _ in range(S)]
+
+    scene_work = getattr(t, "scene_workload", None)
+    for p, prov in enumerate(ps):
+        bw  = min(t.bandwidth, prov.bandwidth)
+        thr = getattr(prov, "throughput", 0.0)
+        if bw <= 0 or thr <= 0:
+            continue
+        tx_global[p] = (t.global_file_size / bw) / 3600.0
+        for s in range(S):
+            tx_scene[s][p] = (t.scene_size(s) / bw) / 3600.0
+            if callable(scene_work):
+                sw = scene_work(s)
+            else:
+                sw = scene_work if scene_work is not None else 0.0
+            cmp_scene[s][p] = sw / thr
+
+    # already used providers don't pay global overhead again
+    used_providers = {t.scene_allocation_data[s][1]
+                      for s in range(S)
+                      if t.scene_allocation_data[s][0] is not None}
+    for p in used_providers:
+        tx_global[p] = 0.0
+
+    # build TOT/COST/PROF for feasibility and later use
     for s in range(S):
         for p in range(P):
             prov = ps[p]
-            bw   = min(t.bandwidth, prov.bandwidth)
-            thr  = getattr(prov, "throughput", 0.0)
-            if bw <= 0 or thr <= 0:
-                tx = cmp = float("inf")
-            else:
-                size = t.global_file_size + t.scene_size(s)
-                tx = size / bw / 3600.0
-                cmp = t.scene_workload / thr
-            tot = tx + cmp
+            tot = tx_global[p] + tx_scene[s][p] + cmp_scene[s][p]
             if tot - 1e-9 > cap_hours[p]:
                 tot = float("inf")
-            TOT[s][p]  = tot
-            COST[s][p] = tot * prov.price_per_gpu_hour if math.isfinite(tot) else float("inf")
+            TOT[s][p] = tot
+            if math.isfinite(tot):
+                COST[s][p] = tot * prov.price_per_gpu_hour
             PROF[s][p] = prov.price_per_gpu_hour
 
     # 이미 사용한 비용(부분 배정)
@@ -63,6 +85,7 @@ def _build_common_model(t, ps, now):
     m = cp_model.CpModel()
     x = [[m.NewBoolVar(f"x{s}_{p}") for p in range(P)] for s in range(S)]
     y = [m.NewBoolVar(f"y{s}") for s in range(S)]  # 이번 스텝 배치 여부
+    z = [m.NewBoolVar(f"z{p}") for p in range(P)]  # provider 사용 여부
 
     # 한 씬: 0개(미배치) 또는 1개 provider
     for s in range(S):
@@ -71,6 +94,12 @@ def _build_common_model(t, ps, now):
     # provider당 1개 씬 제한
     for p in range(P):
         m.Add(sum(x[s][p] for s in range(S)) <= 1)
+
+    # z와 x 연결
+    for p in range(P):
+        for s in range(S):
+            m.Add(x[s][p] <= z[p])
+        m.Add(sum(x[s][p] for s in range(S)) >= z[p])
 
     # 불가능 금지 + 이미 배정된 씬 고정
     for s in range(S):
@@ -84,23 +113,37 @@ def _build_common_model(t, ps, now):
             for p in range(P):
                 m.Add(x[s][p] == (1 if p == fixed_p else 0))
             for p in range(P):
-                TOT[s][p]  = 0.0 if p == fixed_p else float("inf")
-                COST[s][p] = 0.0 if p == fixed_p else float("inf")
-                PROF[s][p] = 0.0
+                if p == fixed_p:
+                    TOT[s][p] = COST[s][p] = 0.0
+                    PROF[s][p] = 0.0
+                    tx_scene[s][p] = cmp_scene[s][p] = 0.0
+                else:
+                    TOT[s][p] = COST[s][p] = float("inf")
+                    tx_scene[s][p] = cmp_scene[s][p] = float("inf")
+            m.Add(z[fixed_p] == 1)
 
-    # provider 시간/비용/윈도우
+    # 정수 스케일링
     tot_int  = [[int(TOT[s][p]*3600*_SCALE) if math.isfinite(TOT[s][p]) else _BIG for p in range(P)] for s in range(S)]
     cost_int = [[int(COST[s][p]*_SCALE)     if math.isfinite(COST[s][p]) else _BIG for p in range(P)] for s in range(S)]
     prof_int = [[int(PROF[s][p]*_SCALE)     for p in range(P)] for s in range(S)]
+    txg_int  = [int(tx_global[p]*3600*_SCALE) if math.isfinite(tx_global[p]) else _BIG for p in range(P)]
+    txs_int  = [[int(tx_scene[s][p]*3600*_SCALE) if math.isfinite(tx_scene[s][p]) else _BIG for p in range(P)] for s in range(S)]
+    cmps_int = [[int(cmp_scene[s][p]*3600*_SCALE) if math.isfinite(cmp_scene[s][p]) else _BIG for p in range(P)] for s in range(S)]
+    price_int = [int(ps[p].price_per_gpu_hour * _SCALE) for p in range(P)]
 
     prov_time = [m.NewIntVar(0, _BIG, f"time_p{p}") for p in range(P)]
     for p in range(P):
-        m.Add(prov_time[p] == sum(tot_int[s][p] * x[s][p] for s in range(S)))
+        m.Add(prov_time[p] ==
+              txg_int[p] * z[p] +
+              sum((txs_int[s][p] + cmps_int[s][p]) * x[s][p] for s in range(S)))
     makespan = m.NewIntVar(0, _BIG, "makespan")
     m.AddMaxEquality(makespan, prov_time)
 
     total_cost = m.NewIntVar(0, _BIG, "total_cost")
-    m.Add(total_cost == sum(cost_int[s][p] * x[s][p] for s in range(S) for p in range(P)))
+    m.Add(total_cost ==
+          sum((txg_int[p] * z[p] +
+               sum((txs_int[s][p] + cmps_int[s][p]) * x[s][p] for s in range(S))) * price_int[p]
+              for p in range(P)))
     over_budget = m.NewIntVar(0, _BIG, "over_budget")
     m.Add(over_budget >= total_cost - int(remaining_budget * _SCALE))
     over_deadline = m.NewIntVar(0, _BIG, "over_deadline")
