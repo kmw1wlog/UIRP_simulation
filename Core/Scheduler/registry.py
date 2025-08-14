@@ -1,11 +1,12 @@
 from Core.Scheduler.task_selector.fifo import FIFOTaskSelector
 from Core.Scheduler.metric_evaluator.baseline import BaselineEvaluator
 from Core.Scheduler.combo_generator.brute_force import BruteForceGenerator
+from Core.Scheduler.combo_generator.greedy import GreedyComboGenerator
 from Core.Scheduler.dispatcher.sequential import SequentialDispatcher
 
-COMBO_REG = {"bf": BruteForceGenerator}
+COMBO_REG = {"bf": BruteForceGenerator, "greedy": GreedyComboGenerator}
 
-DISP_REG = {"bf": SequentialDispatcher}
+DISP_REG = {"bf": SequentialDispatcher, "greedy": SequentialDispatcher}
 
 try:
     from Core.Scheduler.combo_generator.cpsat import CPSatComboGenerator
