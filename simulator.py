@@ -36,7 +36,10 @@ class Simulator:
         self.tasks.initialize_from_data(cfg["tasks"])
         self.providers = Providers()
         self.providers.initialize_from_data(cfg["providers"])
-        self.results: List[Assignment] = []
+        # `results` is None until schedule() is invoked, allowing us to
+        # distinguish between "not yet scheduled" and "scheduled but no
+        # assignments" cases.
+        self.results: List[Assignment] | None = None
         self.metrics: Dict[str, Any] | None = None
         # For injecting BaselineScheduler.evaluator
         self.evaluator = None
@@ -51,7 +54,9 @@ class Simulator:
         system_evaluator.print_report(self.metrics)
 
     def evaluate(self) -> Dict[str, Any]:
-        if not self.results:
+        # Allow evaluation even if no assignments were produced; the caller
+        # just needs to have executed schedule() beforehand.
+        if self.results is None:
             raise RuntimeError("schedule() must be called first")
         if self.metrics is None:
             self.metrics = system_evaluator.evaluate(self.tasks, self.providers)
