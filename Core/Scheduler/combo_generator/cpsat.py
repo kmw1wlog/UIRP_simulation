@@ -5,7 +5,6 @@ from typing import List, Tuple
 from ortools.sat.python import cp_model
 
 from Core.Scheduler.interface import ComboGenerator
-from Core.objective import DEFAULT_WEIGHTS
 
 _SCALE = 1000
 _BIG   = 10**9

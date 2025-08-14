@@ -1,41 +1,38 @@
 # Core/Scheduler/dispatcher/sequential.py
-import datetime
+from __future__ import annotations
+import datetime as dt
 from typing import List, Dict
 from Core.Scheduler.interface import Dispatcher
 
-Assignment = tuple[str, int, datetime.datetime, datetime.datetime, int]
+Assignment = tuple[str, int, dt.datetime, dt.datetime, int]
 
 class SequentialDispatcher(Dispatcher):
-    def _ea(self, prov, dur, cur):
-        try:
-            return prov.earliest_available(dur, cur)
-        except TypeError:
-            return prov.earliest_available(dur)
-
     def dispatch(self, t, cmb, now, ps, ev, verbose):
+        """
+        now 시점부터 provider별로 '순차'로 바로 실행.
+        본 설계에선 한 provider당 이번 스텝에 최대 1개 씬만 오므로,
+        사실상 각 provider는 now에 한 씬을 시작하게 됨.
+        """
         out: List[Assignment] = []
         groups: Dict[int, List[int]] = {}
         for sid, p in enumerate(cmb):
             if p == -1:
-                continue  # 이번 스텝 미배치
+                continue
+            if t.scene_allocation_data[sid][0] is not None:
+                continue
             groups.setdefault(p, []).append(sid)
 
         for p, sids in groups.items():
             prov, cur = ps[p], now
             for sid in sids:
-                # 이미 배정된 씬은 스킵
-                if t.scene_allocation_data[sid][0] is not None:
-                    continue
                 dur, _ = ev.time_cost(t, sid, prov)
-                st = self._ea(prov, dur, cur)
-                if st is None:
-                    continue
+                st = cur
+                ft = st + dt.timedelta(hours=dur)
                 prov.assign(t.id, sid, st, dur)
                 t.scene_allocation_data[sid] = (st, p)
-                ft = st + datetime.timedelta(hours=dur)
                 out.append((t.id, sid, st, ft, p))
                 if verbose:
-                    print(f"      scene{sid}->{p} {st.strftime('%m-%d %H:%M')} dur={dur:.2f}")
+                    print(f"      scene{sid}->P{p} {st.strftime('%m-%d %H:%M')} dur={dur:.2f}")
                 cur = ft
         return out
 
