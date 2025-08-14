@@ -1,6 +1,7 @@
 # Core/Scheduler/combo_generator/cpsat.py
 from __future__ import annotations
 import math
+import datetime as dt
 from typing import List, Tuple
 from ortools.sat.python import cp_model
 
@@ -9,11 +10,25 @@ from Core.Scheduler.interface import ComboGenerator
 _SCALE = 1000
 _BIG   = 10**9
 
+# weights: (time, budget_penalty, deadline_penalty, provider_price, idle)
+DEFAULT_WEIGHTS = (1.0, 200.0, 500.0, 1.0, 0.0)
+
+
+def _cap_now_hours_from_avail(prov, now: dt.datetime) -> float:
+    """Length of current available window starting at now (hours)."""
+    for s, e in getattr(prov, "available_hours", []):
+        if s <= now < e:
+            return max(0.0, (e - now).total_seconds() / 3600.0)
+    return 0.0
+
+
 def _build_common_model(t, ps, now):
     S, P = t.scene_number, len(ps)
     TOT  = [[0.0]*P for _ in range(S)]
     COST = [[0.0]*P for _ in range(S)]
     PROF = [[0.0]*P for _ in range(S)]
+
+    cap_hours = [_cap_now_hours_from_avail(prov, now) for prov in ps]
     for s in range(S):
         for p in range(P):
             prov = ps[p]
@@ -25,8 +40,11 @@ def _build_common_model(t, ps, now):
                 size = t.global_file_size + t.scene_size(s)
                 tx = size / bw / 3600.0
                 cmp = t.scene_workload / thr
-            TOT[s][p]  = tx + cmp
-            COST[s][p] = TOT[s][p] * prov.price_per_gpu_hour
+            tot = tx + cmp
+            if tot - 1e-9 > cap_hours[p]:
+                tot = float("inf")
+            TOT[s][p]  = tot
+            COST[s][p] = tot * prov.price_per_gpu_hour if math.isfinite(tot) else float("inf")
             PROF[s][p] = prov.price_per_gpu_hour
 
     # 이미 사용한 비용(부분 배정)
@@ -40,6 +58,7 @@ def _build_common_model(t, ps, now):
             if tid == t.id:
                 spent += ((ft - st).total_seconds()/3600.0) * prov.price_per_gpu_hour
     remaining_budget = max(0.0, t.budget - spent)
+    window_sec = int((t.deadline - now).total_seconds() * _SCALE)
 
     m = cp_model.CpModel()
     x = [[m.NewBoolVar(f"x{s}_{p}") for p in range(P)] for s in range(S)]
@@ -48,6 +67,10 @@ def _build_common_model(t, ps, now):
     # 한 씬: 0개(미배치) 또는 1개 provider
     for s in range(S):
         m.Add(sum(x[s][p] for p in range(P)) == y[s])
+
+    # provider당 1개 씬 제한
+    for p in range(P):
+        m.Add(sum(x[s][p] for s in range(S)) <= 1)
 
     # 불가능 금지 + 이미 배정된 씬 고정
     for s in range(S):
@@ -78,9 +101,10 @@ def _build_common_model(t, ps, now):
 
     total_cost = m.NewIntVar(0, _BIG, "total_cost")
     m.Add(total_cost == sum(cost_int[s][p] * x[s][p] for s in range(S) for p in range(P)))
-    m.Add(total_cost <= int(remaining_budget * _SCALE))
-    window_sec = int((t.deadline - now).total_seconds() * _SCALE)
-    m.Add(makespan <= window_sec)
+    over_budget = m.NewIntVar(0, _BIG, "over_budget")
+    m.Add(over_budget >= total_cost - int(remaining_budget * _SCALE))
+    over_deadline = m.NewIntVar(0, _BIG, "over_deadline")
+    m.Add(over_deadline >= makespan - window_sec)
 
     # 가능하면 최소 1개 이상 배치
     unassigned = [s for s in range(S) if t.scene_allocation_data[s][0] is None]
@@ -88,14 +112,14 @@ def _build_common_model(t, ps, now):
     if has_any_finite:
         m.Add(sum(y[s] for s in unassigned) >= 1)
 
-    return m, x, y, tot_int, cost_int, prof_int
+    return m, x, y, tot_int, cost_int, prof_int, total_cost, makespan, over_budget, over_deadline
 
 class CPSatComboGenerator(ComboGenerator):
     def best_combo(self, t, ps, now, ev, verbose=False):
-        a1, _, _, b1, _ = DEFAULT_WEIGHTS
+        a1, a2, a3, b1, _ = DEFAULT_WEIGHTS
 
         # 공통 제약 구성
-        m1, x1, y1, tot_int, cost_int, prof_int = _build_common_model(t, ps, now)
+        m1, x1, y1, *_ = _build_common_model(t, ps, now)
 
         # 1단계: 배치 수 최대화
         m1.Maximize(sum(y1[s] for s in range(t.scene_number)
@@ -112,19 +136,16 @@ class CPSatComboGenerator(ComboGenerator):
         if y_opt == 0:
             return None  # 이번 스텝 배치 불가
 
-        # 2단계: 배치 수를 y_opt 이상으로 고정하고, 시간/수익율 최소화
-        m2, x2, y2, tot_int2, cost_int2, prof_int2 = _build_common_model(t, ps, now)
+        # 2단계: 배치 수를 y_opt 이상으로 고정하고, 시간/비용 패널티 최소화
+        m2, x2, y2, tot_int2, cost_int2, prof_int2, total_cost2, makespan2, overB2, overDL2 = _build_common_model(t, ps, now)
         m2.Add(sum(y2[s] for s in range(t.scene_number)
                    if t.scene_allocation_data[s][0] is None) >= y_opt)
 
-        obj_terms = []
-        for s in range(t.scene_number):
-            for p in range(len(ps)):
-                if tot_int2[s][p] >= _BIG:
-                    continue
-                obj_scene = int(a1*_SCALE) * tot_int2[s][p] + int(b1*_SCALE) * prof_int2[s][p]
-                obj_terms.append(obj_scene * x2[s][p])
-        m2.Minimize(sum(obj_terms))
+        prof_sum = sum(prof_int2[s][p] * x2[s][p] for s in range(t.scene_number) for p in range(len(ps)))
+        m2.Minimize(int(a1*_SCALE) * makespan2 +
+                    int(a2*_SCALE) * overB2 +
+                    int(a3*_SCALE) * overDL2 +
+                    int(b1*_SCALE) * prof_sum)
 
         solver2 = cp_model.CpSolver()
         if verbose:
@@ -146,16 +167,11 @@ class CPSatComboGenerator(ComboGenerator):
             chosen = None
             for p in range(len(ps)):
                 if solver2.BooleanValue(x2[s][p]):
-                    chosen = p; break
+                    chosen = p
+                    break
             cmb.append(chosen if chosen is not None else -1)
 
-        # 메트릭(참고용)
-        prov_tot_h = [0.0]*len(ps)
-        total_cost_f = 0.0
-        for s, p in enumerate(cmb):
-            if p == -1:
-                continue
-            prov_tot_h[p] += (tot_int[s][p] / (3600*_SCALE))
-            total_cost_f += (cost_int[s][p] / _SCALE)
-        t_tot = max(prov_tot_h) if prov_tot_h else 0.0
-        return cmb, t_tot, total_cost_f
+        ok, t_tot, cost, _, _, _ = ev.feasible(t, cmb, now, ps)
+        if not ok:
+            return None
+        return cmb, t_tot, cost
