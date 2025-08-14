@@ -57,16 +57,17 @@ def _build_common_model(t, ps, now):
     for p in used_providers:
         tx_global[p] = 0.0
 
-    # build TOT/COST/PROF for feasibility and later use
+    # build per-scene metrics without global overhead
     for s in range(S):
         for p in range(P):
             prov = ps[p]
-            tot = tx_global[p] + tx_scene[s][p] + cmp_scene[s][p]
-            if tot - 1e-9 > cap_hours[p]:
-                tot = float("inf")
-            TOT[s][p] = tot
-            if math.isfinite(tot):
-                COST[s][p] = tot * prov.price_per_gpu_hour
+            tot_scene = tx_scene[s][p] + cmp_scene[s][p]
+            total_time = tx_global[p] + tot_scene
+            if total_time - 1e-9 > cap_hours[p]:
+                tot_scene = float("inf")
+            TOT[s][p] = tot_scene
+            if math.isfinite(tot_scene):
+                COST[s][p] = tot_scene * prov.price_per_gpu_hour
             PROF[s][p] = prov.price_per_gpu_hour
 
     # 이미 사용한 비용(부분 배정)
