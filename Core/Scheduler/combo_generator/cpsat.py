@@ -115,7 +115,34 @@ def _build_common_model(t, ps, now):
     return m, x, y, tot_int, cost_int, prof_int, total_cost, makespan, over_budget, over_deadline
 
 class CPSatComboGenerator(ComboGenerator):
+    def time_complexity(self, t, ps, now, ev):
+        unassigned = [i for i, (st, _) in enumerate(t.scene_allocation_data) if st is None]
+        feasible = []
+        for sid in unassigned:
+            cands = []
+            for p_idx, prov in enumerate(ps):
+                d, _ = ev.time_cost(t, sid, prov)
+                if math.isfinite(d) and d > 0 and _cap_now_hours_from_avail(prov, now) >= d:
+                    cands.append(p_idx)
+            feasible.append(cands)
+
+        from functools import lru_cache
+
+        @lru_cache(None)
+        def dfs(i, mask):
+            if i == len(feasible):
+                return 1
+            total = dfs(i + 1, mask)  # skip
+            for p in feasible[i]:
+                if mask & (1 << p) == 0:
+                    total += dfs(i + 1, mask | (1 << p))
+            return total
+
+        return dfs(0, 0) - 1
     def best_combo(self, t, ps, now, ev, verbose=False):
+        if verbose:
+            space = self.time_complexity(t, ps, now, ev)
+            print(f"[CP] search space={space}")
         a1, a2, a3, b1, _ = DEFAULT_WEIGHTS
 
         # 공통 제약 구성

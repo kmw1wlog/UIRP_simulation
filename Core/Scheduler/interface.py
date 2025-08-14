@@ -26,6 +26,16 @@ class ComboGenerator(ABC):
     ) -> Optional[Tuple[List[int], float, float]]: ...
     # return: (combo[scene_id->provider_idx or -1], t_tot_hours, cost_usd)
 
+    def time_complexity(
+        self,
+        task: Task,
+        providers: Providers,
+        sim_time: datetime.datetime,
+        evaluator: "MetricEvaluator",
+    ) -> int:
+        """Return exact count of feasible assignments (excluding all-skip)."""
+        return 0
+
 class MetricEvaluator(ABC):
     @abstractmethod
     def time_cost(self, task: Task, scene_id: int, prov: Provider) -> Tuple[float, float]: ...
