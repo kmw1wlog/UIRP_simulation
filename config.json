@@ -19,6 +19,36 @@
       "budget": 500.0,
       "deadline": "2025-07-14T08:00:00",
       "start_time": "2025-07-12T10:00:00"
+    },
+    {
+      "id": "task_C",
+      "global_file_size": 600.0,
+      "scene_number": 5,
+      "scene_workload": 250.0,
+      "bandwidth": 50.0,
+      "budget": 450.0,
+      "deadline": "2025-07-15T06:00:00",
+      "start_time": "2025-07-12T12:00:00"
+    },
+    {
+      "id": "task_D",
+      "global_file_size": 900.0,
+      "scene_number": 2,
+      "scene_workload": 180.0,
+      "bandwidth": 30.0,
+      "budget": 350.0,
+      "deadline": "2025-07-13T22:00:00",
+      "start_time": "2025-07-12T08:30:00"
+    },
+    {
+      "id": "task_E",
+      "global_file_size": 400.0,
+      "scene_number": 6,
+      "scene_workload": 300.0,
+      "bandwidth": 70.0,
+      "budget": 600.0,
+      "deadline": "2025-07-14T23:00:00",
+      "start_time": "2025-07-12T13:00:00"
     }
   ],
 
@@ -49,6 +79,24 @@
       ],
       "price": 5.0,
       "bandwidth": 90.0
+    },
+    {
+      "throughput": 55.0,
+      "available_hours": [
+        ["2025-07-12T06:00:00", "2025-07-12T12:00:00"],
+        ["2025-07-13T06:00:00", "2025-07-13T16:00:00"]
+      ],
+      "price": 7.5,
+      "bandwidth": 120.0
+    },
+    {
+      "throughput": 22.0,
+      "available_hours": [
+        ["2025-07-12T11:00:00", "2025-07-12T19:00:00"],
+        ["2025-07-13T12:00:00", "2025-07-13T22:00:00"]
+      ],
+      "price": 3.5,
+      "bandwidth": 60.0
     }
   ]
 }

@@ -18,7 +18,6 @@ def calc_objective(
     scene_id: int,
     prov: Provider,
     *,
-    scene_start: datetime.datetime | None = None,    # ★ 추가 (옵션)
     weights: Tuple[float, float, float, float, float] = DEFAULT_WEIGHTS
 ) -> float:
     """
@@ -26,7 +25,9 @@ def calc_objective(
     나중에 시간 의존 패널티를 넣고 싶을 때 활용할 수 있습니다.
     """
     weights = weights or DEFAULT_WEIGHTS
+
     a1, a2, a3, b1, b2 = weights
+
     size = task.global_file_size + task.scene_size(scene_id)
     rate = min(task.bandwidth, prov.bandwidth)
     T_tx = size / rate

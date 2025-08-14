@@ -26,6 +26,8 @@ def _is_light(rgb_hex):
     luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
     return luminance > 0.5
 
+
+#
 class Simulator:
     def __init__(self, cfg_path: str):
         cfg = json.loads(Path(cfg_path).read_text())
@@ -33,12 +35,15 @@ class Simulator:
         self.providers = Providers(); self.providers.initialize_from_data(cfg["providers"])
         self.results: List[Assignment] = []
 
+    # scheduler class 에 tasks, providers 전달, run 메서드 실행
     def schedule(self, sch: BaselineScheduler):
         self.results = sch.run(self.tasks, self.providers)
 
+    # Task 에 대하여, 스케줄링 결과 완료되지 않은 씬 정보
     @staticmethod
     def _missing(task: Task) -> List[int]:
         return [i for i, (st, _) in enumerate(task.scene_allocation_data) if st is None]
+
 
     def _idle(self) -> float:
         if not self.results:
@@ -76,7 +81,7 @@ class Simulator:
 
             starts = [r[2] for r in rec]; finishes = [r[3] for r in rec]
             for r in rec:
-                tot_obj += calc_objective(t, r[1], self.providers[r[4]], scene_start=r[2])
+                tot_obj += calc_objective(t, r[1], self.providers[r[4]])
             tasks_out[t.id] = {
                 "completed": True,
                 "completion_h": (max(finishes) - min(starts)).total_seconds() / 3600,
@@ -103,8 +108,21 @@ class Simulator:
         if figsize is None:
             figsize = (14, max(3, 1 + 0.8 * len(self.providers)))
 
-        start_min = min(r[2] for r in self.results)
-        finish_max = max(r[3] for r in self.results)
+        # --- 1. 모든 provider의 availability 를 포함해 절대 최소/최대 시각 구하기
+        avail_min = min(s for p in self.providers for (s, _) in p.available_hours)
+        avail_max = max(e for p in self.providers for (_, e) in p.available_hours)
+
+        # --- 2. results 가 없을 때를 대비해 safety guard
+        if self.results:
+            task_min = min(r[2] for r in self.results)
+            task_max = max(r[3] for r in self.results)
+        else:
+            task_min = avail_min
+            task_max = avail_max
+
+        start_min = min(avail_min, task_min)
+        finish_max = max(avail_max, task_max)
+
         task_ids = [t.id for t in self.tasks]
         color_map = _task_color_map(task_ids)
 
@@ -174,7 +192,7 @@ class Simulator:
 # ---------------- CLI ----------------
 if __name__ == "__main__":
     pa = argparse.ArgumentParser()
-    pa.add_argument("--config", default="config.json")
+    pa.add_argument("--config", default="config1.json")
     pa.add_argument("--algo",   default="bf", help="bf | cp")
     pa.add_argument("--out-img", default="schedule.png", help="Output image path")
     pa.add_argument("-v", action="count", default=0, help="-v / -vv for verbose")

@@ -1,5 +1,4 @@
-
-# baseline_scheduler/scheduler.py
+# Core/Scheduler/scheduler.py
 import datetime
 from typing import List
 from Model.tasks import Tasks, Task
@@ -28,6 +27,7 @@ class BaselineScheduler:
     def _feed(self, now, tasks):
         ids = {t.id for t in self.waiting_tasks}
         for t in tasks:
+            # 아직 시작시각 도달 & 미완료면 큐에 투입
             if t.start_time <= now and t.id not in ids and any(st is None for st, _ in t.scene_allocation_data):
                 self.waiting_tasks.append(t)
         self.waiting_tasks.sort(key=lambda t: t.start_time)
@@ -36,9 +36,10 @@ class BaselineScheduler:
         new: List[Assignment] = []
         remain = []
         for t in self.selector.select(now, self.waiting_tasks):
-            if not all(st is None for st, _ in t.scene_allocation_data):
-                remain.append(t)
+            # [CHANGED] 전부 완료면 건너뜀
+            if all(st is not None for st, _ in t.scene_allocation_data):
                 continue
+
             best = self.generator.best_combo(t, ps, now, self.evaluator, verbose=self.verbose)
             if best is None:
                 remain.append(t)
@@ -46,7 +47,13 @@ class BaselineScheduler:
             cmb, t_tot, cost = best
             if self.verbose:
                 print(f"[{t.id}] choose {cmb} t={t_tot:.2f}h cost={cost:.1f}$")
-            new += self.dispatcher.dispatch(t, cmb, now, ps, self.evaluator, self.verbose)
+            before_missing = sum(1 for st, _ in t.scene_allocation_data if st is None)
+            new_assgn = self.dispatcher.dispatch(t, cmb, now, ps, self.evaluator, self.verbose)
+            new += new_assgn
+            after_missing = sum(1 for st, _ in t.scene_allocation_data if st is None)
+            # [CHANGED] 여전히 남은 씬이 있으면 다음 스텝에서도 고려
+            if after_missing > 0:
+                remain.append(t)
         self.waiting_tasks = remain
         return new
 
@@ -54,7 +61,12 @@ class BaselineScheduler:
             time_start: datetime.datetime | None = None,
             time_end: datetime.datetime | None = None) -> List[Assignment]:
         if time_start is None:
-            time_start = min(min(p.available_hours)[0] for p in ps)
+            # provider available_hours 가 비어있을 수 있음에 주의
+            starts = []
+            for p in ps:
+                if getattr(p, 'available_hours', None):
+                    starts.append(min(a[0] for a in p.available_hours))
+            time_start = min(starts) if starts else min(t.start_time for t in tasks)
         now = time_start
         if time_end is None:
             time_end = max(t.deadline for t in tasks) + datetime.timedelta(days=1)
