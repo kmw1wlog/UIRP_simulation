@@ -1,5 +1,5 @@
 # ================================================================
-# scheduler.py  – 공용 인터페이스 래퍼
+# scheduler.py – common interface wrapper
 # ================================================================
 from __future__ import annotations
 import datetime
@@ -9,10 +9,10 @@ from Model.tasks import Tasks
 from Model.providers import Providers
 from Core.Scheduler.scheduler import BaselineScheduler as _BaselineScheduler
 
-# ---------- 공통 Assignment 형식 ----------
+# ---------- Common Assignment type ----------
 Assignment = Tuple[str, int, datetime.datetime, datetime.datetime, int]
 
-# ---------- 스케줄러 최소 프로토콜 ----------
+# ---------- Minimum scheduler protocol ----------
 class Scheduler(Protocol):
     def run(
         self,

@@ -34,8 +34,12 @@ class BaselineScheduler:
     def _feed(self, now, tasks):
         ids = {t.id for t in self.waiting_tasks}
         for t in tasks:
-            # 아직 시작시각 도달 & 미완료면 큐에 투입
-            if t.start_time <= now and t.id not in ids and any(st is None for st, _ in t.scene_allocation_data):
+            # Add task to queue if its start time has arrived and it still has unassigned scenes
+            if (
+                t.start_time <= now
+                and t.id not in ids
+                and any(st is None for st, _ in t.scene_allocation_data)
+            ):
                 self.waiting_tasks.append(t)
         self.waiting_tasks.sort(key=lambda t: t.start_time)
 
@@ -43,7 +47,7 @@ class BaselineScheduler:
         new: List[Assignment] = []
         remain = []
         for t in self.selector.select(now, self.waiting_tasks):
-            # [CHANGED] 전부 완료면 건너뜀
+            # Skip tasks that are already complete
             if all(st is not None for st, _ in t.scene_allocation_data):
                 continue
 
@@ -58,7 +62,7 @@ class BaselineScheduler:
             new_assgn = self.dispatcher.dispatch(t, cmb, now, ps, self.evaluator, self.verbose)
             new += new_assgn
             after_missing = sum(1 for st, _ in t.scene_allocation_data if st is None)
-            # [CHANGED] 여전히 남은 씬이 있으면 다음 스텝에서도 고려
+            # Keep tasks with remaining scenes for the next iteration
             if after_missing > 0:
                 remain.append(t)
         self.waiting_tasks = remain
@@ -68,7 +72,7 @@ class BaselineScheduler:
             time_start: datetime.datetime | None = None,
             time_end: datetime.datetime | None = None) -> List[Assignment]:
         if time_start is None:
-            # provider available_hours 가 비어있을 수 있음에 주의
+            # Note: provider available_hours may be empty
             starts = []
             for p in ps:
                 if getattr(p, 'available_hours', None):

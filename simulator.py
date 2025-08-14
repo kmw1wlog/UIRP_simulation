@@ -1,8 +1,10 @@
-# simulator.py
-# CLEAR
+"""Simulation runner and visualization helpers."""
 
 from __future__ import annotations
-import json, datetime, pprint, argparse
+import argparse
+import datetime
+import json
+import pprint
 from pathlib import Path
 from typing import List, Dict, Any
 
@@ -30,37 +32,43 @@ def _is_light(rgb_hex):
 class Simulator:
     def __init__(self, cfg_path: str):
         cfg = json.loads(Path(cfg_path).read_text())
-        self.tasks = Tasks();      self.tasks.initialize_from_data(cfg["tasks"])
-        self.providers = Providers(); self.providers.initialize_from_data(cfg["providers"])
+        self.tasks = Tasks()
+        self.tasks.initialize_from_data(cfg["tasks"])
+        self.providers = Providers()
+        self.providers.initialize_from_data(cfg["providers"])
         self.results: List[Assignment] = []
-        self.evaluator = None  # BaselineScheduler.evaluator 주입용
+        # For injecting BaselineScheduler.evaluator
+        self.evaluator = None
 
-    # scheduler class 에 tasks, providers 전달, run 메서드 실행
+    # Run scheduler with tasks and providers
     def schedule(self, sch: BaselineScheduler):
-        # evaluator 가중치를 evaluate에서 쓰기 위해 보관
+        # Store evaluator to reuse weights in evaluate()
         self.evaluator = getattr(sch, "evaluator", None)
         self.results = sch.run(self.tasks, self.providers)
 
-    # Task 에 대하여, 스케줄링 결과 완료되지 않은 씬 정보
+    # For a Task, return indices of unassigned scenes
     @staticmethod
     def _missing(task: Task) -> List[int]:
+        """Indices of scenes that are not yet assigned."""
         return [i for i, (st, _) in enumerate(task.scene_allocation_data) if st is None]
 
     def _idle(self) -> float:
-        """
-        전체 '유틸(=busy) 비율'을 다음으로 계산:
-          sum_scheduled / (sum_remaining_available + sum_scheduled)
-        주의: Provider.assign()이 available_hours를 즉시 깎기 때문에,
-             남은 available_hours + 배정된 schedule 시간이 원래 총 가용량.
+        """Compute overall utilization ratio.
+
+        Defined as:
+            sum_scheduled / (sum_remaining_available + sum_scheduled)
+
+        Note: Provider.assign() immediately deducts availability, so
+        remaining available hours + scheduled hours equals original capacity.
         """
         total_sched_h = 0.0
         total_remain_avail_h = 0.0
         for p in self.providers:
-            # 배정된 총 시간
+            # Total scheduled time
             busy = merge_intervals([(st, ft) for _, _, st, ft in p.schedule])
             sched_h = sum((b2 - b1).total_seconds() / 3600.0 for b1, b2 in busy)
             total_sched_h += sched_h
-            # 남은 가용 시간 (assign 이후 남은 available_hours 전체)
+            # Remaining available time after assignments
             total_remain_avail_h += sum(
                 (e - s).total_seconds() / 3600.0 for s, e in getattr(p, "available_hours", [])
             )
@@ -69,49 +77,54 @@ class Simulator:
 
     def evaluate(self) -> Dict[str, Any]:
         if not self.results:
-            raise RuntimeError("schedule() 먼저 호출 필요")
+            raise RuntimeError("schedule() must be called first")
 
-        # evaluator 가중치 (없으면 기본값)
-        WT  = getattr(self.evaluator, "WT", 1.0)
-        WC  = getattr(self.evaluator, "WC", 1.0)
-        WD  = getattr(self.evaluator, "WD", 10.0)
-        WB  = getattr(self.evaluator, "WB", 200.0)
+        # Evaluator weights (defaults if not provided)
+        WT = getattr(self.evaluator, "WT", 1.0)
+        WC = getattr(self.evaluator, "WC", 1.0)
+        WD = getattr(self.evaluator, "WD", 10.0)
+        WB = getattr(self.evaluator, "WB", 200.0)
         WDL = getattr(self.evaluator, "WDL", 500.0)
 
         tasks_out: Dict[str, Any] = {}
         finished: List[Assignment] = []
         tot_cost = 0.0
-        tot_obj  = 0.0
+        tot_obj = 0.0
 
-        # 태스크별 결과 집계
+        # Aggregate results per task
         for t in self.tasks:
             rec = [r for r in self.results if r[0] == t.id]
             miss = self._missing(t)
 
-            # 비용
-            cost = sum((r[3] - r[2]).total_seconds() / 3600.0 *
-                       self.providers[r[4]].price_per_gpu_hour for r in rec)
+            # Cost
+            cost = sum(
+                (r[3] - r[2]).total_seconds() / 3600.0 *
+                self.providers[r[4]].price_per_gpu_hour
+                for r in rec
+            )
             tot_cost += cost
 
-            # 완료 여부 및 완료시간
+            # Completion and lateness
             if rec:
-                starts   = [r[2] for r in rec]
+                starts = [r[2] for r in rec]
                 finishes = [r[3] for r in rec]
                 completion_h = (max(finishes) - min(starts)).total_seconds() / 3600.0
-                lateness_h   = max(0.0, (max(finishes) - t.deadline).total_seconds() / 3600.0)
+                lateness_h = max(0.0, (max(finishes) - t.deadline).total_seconds() / 3600.0)
             else:
                 completion_h = 0.0
-                lateness_h   = 0.0
+                lateness_h = 0.0
 
             budget_over = max(0.0, cost - t.budget)
             deferred_cnt = len(miss)
 
-            # 소프트 패널티를 포함한 점수 합산
-            tot_obj += (WT * completion_h +
-                        WC * cost +
-                        WB * budget_over +
-                        WDL * lateness_h +
-                        WD * deferred_cnt)
+            # Objective with soft penalties
+            tot_obj += (
+                WT * completion_h +
+                WC * cost +
+                WB * budget_over +
+                WDL * lateness_h +
+                WD * deferred_cnt
+            )
 
             if miss:
                 tasks_out[t.id] = {
@@ -134,38 +147,41 @@ class Simulator:
                 }
                 finished += rec
 
-        # 전체 메이크스팬(완료된 작업 기준)
-        makespan = ((max(r[3] for r in finished) - min(r[2] for r in finished)).total_seconds() / 3600.0
-                    if finished else 0.0)
+        # Overall makespan (based on finished tasks)
+        makespan = (
+            (max(r[3] for r in finished) - min(r[2] for r in finished)).total_seconds() / 3600.0
+            if finished
+            else 0.0
+        )
 
         return {
             "tasks": tasks_out,
             "makespan_h": makespan,
-            "overall_idle_ratio": self._idle(),  # 위 설명대로 정의된 유틸 비율
+            "overall_idle_ratio": self._idle(),  # Utilization ratio defined above
             "total_cost": tot_cost,
-            "objective_sum": tot_obj,            # WT/WC/WB/WDL/WD 기반 합산 점수
+            "objective_sum": tot_obj,  # Sum based on WT/WC/WB/WDL/WD
         }
 
     def visualize(self, save_path: str | None = None, show: bool = True,
                   figsize: tuple[int, int] | None = None):
         if not self.results:
-            raise RuntimeError("schedule() 먼저 호출 필요")
+            raise RuntimeError("schedule() must be called first")
 
         if figsize is None:
             figsize = (14, max(3, 1 + 0.8 * len(self.providers)))
 
-        # --- 1. 모든 provider의 availability 를 포함해 절대 최소/최대 시각 구하기
-        # 주의: available_hours는 assign() 이후 '남은' 가용시간 구간들임
+        # --- 1. Determine absolute min/max times including all provider availability
+        # Note: available_hours contains remaining intervals after assignments
         avail_points = [ts for p in self.providers for ts in p.available_hours]
         if avail_points:
             avail_min = min(s for (s, _) in avail_points)
             avail_max = max(e for (_, e) in avail_points)
         else:
-            # 가용구간이 모두 소진되었을 수도 있으니, 결과 기준으로 fallback
+            # If all availability is consumed, fallback to results
             avail_min = min(r[2] for r in self.results)
             avail_max = max(r[3] for r in self.results)
 
-        # --- 2. results 가 없을 때를 대비한 세이프가드(이미 위에서 체크함)
+        # --- 2. Safeguard when results are empty (already checked above)
         task_min = min(r[2] for r in self.results)
         task_max = max(r[3] for r in self.results)
 
@@ -180,7 +196,7 @@ class Simulator:
 
         fig, ax = plt.subplots(figsize=figsize)
 
-        # 남은 가용창(회색)을 먼저 그림
+        # Draw remaining availability windows (gray) first
         for prov_idx, prov in enumerate(self.providers):
             shade_norm = prov.price_per_gpu_hour / max_price
             shade = 1 - shade_norm
@@ -201,7 +217,7 @@ class Simulator:
                 ax.plot(ft_num, prov_idx, marker="v", color="black", markersize=6, zorder=5,
                         label="Availability End" if prov_idx == 0 else "")
 
-        # 실제 배정된 블록을 겹쳐서 그림
+        # Overlay actual assigned blocks
         for prov_idx, _ in enumerate(self.providers):
             prov_results = [r for r in self.results if r[4] == prov_idx]
             for task_id, scene_idx, st, ft, _ in prov_results:
@@ -227,12 +243,15 @@ class Simulator:
 
         ax.set_yticks(range(len(self.providers)))
         ax.set_yticklabels([f"Prov {i}" for i in range(len(self.providers))])
-        ax.set_xlabel("Time"); ax.set_ylabel("Provider")
+        ax.set_xlabel("Time")
+        ax.set_ylabel("Provider")
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d\n%H:%M"))
         fig.autofmt_xdate()
-        handles, labels = ax.get_legend_handles_labels(); by_label = dict(zip(labels, handles))
+        handles, labels = ax.get_legend_handles_labels()
+        by_label = dict(zip(labels, handles))
         ax.legend(by_label.values(), by_label.keys(), title="Task", bbox_to_anchor=(1.02, 1), loc="upper left")
-        ax.set_title("Schedule Visualization"); ax.grid(True, axis="x", linestyle=":", linewidth=0.5, zorder=0)
+        ax.set_title("Schedule Visualization")
+        ax.grid(True, axis="x", linestyle=":", linewidth=0.5, zorder=0)
 
         plt.tight_layout()
         if save_path:
