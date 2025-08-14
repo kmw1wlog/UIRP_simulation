@@ -13,10 +13,10 @@ import matplotlib.dates as mdates
 from matplotlib.patches import Rectangle
 import matplotlib.colors as mcolors
 
-from Model.tasks import Tasks, Task
+from Model.tasks import Tasks
 from Model.providers import Providers
 from Core.scheduler import BaselineScheduler, Assignment
-from utils.utils import merge_intervals
+from Core.Scheduler import system_evaluator
 
 _DEFAULT_COLORS = plt.rcParams["axes.prop_cycle"].by_key()["color"]
 
@@ -37,6 +37,7 @@ class Simulator:
         self.providers = Providers()
         self.providers.initialize_from_data(cfg["providers"])
         self.results: List[Assignment] = []
+        self.metrics: Dict[str, Any] | None = None
         # For injecting BaselineScheduler.evaluator
         self.evaluator = None
 
@@ -45,122 +46,16 @@ class Simulator:
         # Store evaluator to reuse weights in evaluate()
         self.evaluator = getattr(sch, "evaluator", None)
         self.results = sch.run(self.tasks, self.providers)
-
-    # For a Task, return indices of unassigned scenes
-    @staticmethod
-    def _missing(task: Task) -> List[int]:
-        """Indices of scenes that are not yet assigned."""
-        return [i for i, (st, _) in enumerate(task.scene_allocation_data) if st is None]
-
-    def _idle(self) -> float:
-        """Compute overall utilization ratio.
-
-        Defined as:
-            sum_scheduled / (sum_remaining_available + sum_scheduled)
-
-        Note: Provider.assign() immediately deducts availability, so
-        remaining available hours + scheduled hours equals original capacity.
-        """
-        total_sched_h = 0.0
-        total_remain_avail_h = 0.0
-        for p in self.providers:
-            # Total scheduled time
-            busy = merge_intervals([(st, ft) for _, _, st, ft in p.schedule])
-            sched_h = sum((b2 - b1).total_seconds() / 3600.0 for b1, b2 in busy)
-            total_sched_h += sched_h
-            # Remaining available time after assignments
-            total_remain_avail_h += sum(
-                (e - s).total_seconds() / 3600.0 for s, e in getattr(p, "available_hours", [])
-            )
-        denom = total_remain_avail_h + total_sched_h
-        return (total_sched_h / denom) if denom > 0 else 0.0
+        # Evaluate system metrics immediately after scheduling
+        self.metrics = system_evaluator.evaluate(self.tasks, self.providers)
+        system_evaluator.print_report(self.metrics)
 
     def evaluate(self) -> Dict[str, Any]:
         if not self.results:
             raise RuntimeError("schedule() must be called first")
-
-        # Evaluator weights (defaults if not provided)
-        WT = getattr(self.evaluator, "WT", 1.0)
-        WC = getattr(self.evaluator, "WC", 1.0)
-        WD = getattr(self.evaluator, "WD", 10.0)
-        WB = getattr(self.evaluator, "WB", 200.0)
-        WDL = getattr(self.evaluator, "WDL", 500.0)
-
-        tasks_out: Dict[str, Any] = {}
-        finished: List[Assignment] = []
-        tot_cost = 0.0
-        tot_obj = 0.0
-
-        # Aggregate results per task
-        for t in self.tasks:
-            rec = [r for r in self.results if r[0] == t.id]
-            miss = self._missing(t)
-
-            # Cost
-            cost = sum(
-                (r[3] - r[2]).total_seconds() / 3600.0 *
-                self.providers[r[4]].price_per_gpu_hour
-                for r in rec
-            )
-            tot_cost += cost
-
-            # Completion and lateness
-            if rec:
-                starts = [r[2] for r in rec]
-                finishes = [r[3] for r in rec]
-                completion_h = (max(finishes) - min(starts)).total_seconds() / 3600.0
-                lateness_h = max(0.0, (max(finishes) - t.deadline).total_seconds() / 3600.0)
-            else:
-                completion_h = 0.0
-                lateness_h = 0.0
-
-            budget_over = max(0.0, cost - t.budget)
-            deferred_cnt = len(miss)
-
-            # Objective with soft penalties
-            tot_obj += (
-                WT * completion_h +
-                WC * cost +
-                WB * budget_over +
-                WDL * lateness_h +
-                WD * deferred_cnt
-            )
-
-            if miss:
-                tasks_out[t.id] = {
-                    "completed": False,
-                    "missing": miss,
-                    "cost": cost,
-                    "budget_ok": cost <= t.budget,
-                    "budget_over": budget_over,
-                    "lateness_h": lateness_h,
-                }
-            else:
-                tasks_out[t.id] = {
-                    "completed": True,
-                    "completion_h": completion_h,
-                    "cost": cost,
-                    "budget_ok": cost <= t.budget,
-                    "budget_over": budget_over,
-                    "deadline_ok": lateness_h == 0.0,
-                    "lateness_h": lateness_h,
-                }
-                finished += rec
-
-        # Overall makespan (based on finished tasks)
-        makespan = (
-            (max(r[3] for r in finished) - min(r[2] for r in finished)).total_seconds() / 3600.0
-            if finished
-            else 0.0
-        )
-
-        return {
-            "tasks": tasks_out,
-            "makespan_h": makespan,
-            "overall_idle_ratio": self._idle(),  # Utilization ratio defined above
-            "total_cost": tot_cost,
-            "objective_sum": tot_obj,  # Sum based on WT/WC/WB/WDL/WD
-        }
+        if self.metrics is None:
+            self.metrics = system_evaluator.evaluate(self.tasks, self.providers)
+        return self.metrics
 
     def visualize(self, save_path: str | None = None, show: bool = True,
                   figsize: tuple[int, int] | None = None):

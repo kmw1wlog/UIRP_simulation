@@ -127,10 +127,10 @@ config.json
 
 1. Load config ⇒ build objects  
 2. Invoke a `Scheduler` instance  
-3. Gather `results: List[(task_id, scene_id, start, finish, provider_idx)]`  
-4. Compute KPIs:
-   * Per‑task: completion time, budget‑hit, deadline‑hit  
-   * Global: makespan, provider idle ratio, total cost, Σ objective
+3. Gather `results: List[(task_id, scene_id, start, finish, provider_idx)]`
+4. Compute KPIs via `system_evaluator`:
+   * Per‑task: cost, budget overrun, start/finish, deadline hit/miss and lateness
+   * Global: makespan, throughput, average lateness and provider utilisation
 
 Run via:
 
