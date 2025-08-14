@@ -2,7 +2,15 @@
 from __future__ import annotations
 import math
 from itertools import product
+from functools import reduce
+from operator import mul
 from Core.Scheduler.interface import ComboGenerator
+
+try:
+    from tqdm import tqdm
+except Exception:  # pragma: no cover - fallback when tqdm is unavailable
+    def tqdm(iterable=None, **kwargs):
+        return iterable
 
 class BruteForceGenerator(ComboGenerator):
     """
@@ -21,6 +29,30 @@ class BruteForceGenerator(ComboGenerator):
         cand.sort(key=lambda x: x[0])
         return [p for _, p in cand[:max(1, min(kprov, len(cand)))]]
 
+    def time_complexity(self, t, ps, now, ev):
+        scene_ids = [i for i, (st, _) in enumerate(t.scene_allocation_data) if st is None]
+        if not scene_ids:
+            return 0
+        kprov = min(self.kprov, len(ps))
+        feasible = []
+        for sid in scene_ids:
+            cands = self._best_providers(t, ps, sid, ev, kprov=kprov)
+            feasible.append(cands)
+
+        from functools import lru_cache
+
+        @lru_cache(None)
+        def dfs(i, mask):
+            if i == len(feasible):
+                return 1
+            total = dfs(i + 1, mask)  # skip
+            for p in feasible[i]:
+                if mask & (1 << p) == 0:
+                    total += dfs(i + 1, mask | (1 << p))
+            return total
+
+        return dfs(0, 0) - 1  # exclude all-skip
+
     def best_combo(self, t, ps, now, ev, verbose=False):
         # 미배정 씬만
         scene_ids = [i for i, (st, _) in enumerate(t.scene_allocation_data) if st is None]
@@ -35,8 +67,18 @@ class BruteForceGenerator(ComboGenerator):
             cands.append(-1)  # 연기 옵션
             cand_lists.append((sid, cands))
 
+        if verbose:
+            iter_total = reduce(mul, (len(c[1]) for c in cand_lists), 1)
+            search_space = self.time_complexity(t, ps, now, ev)
+            print(f"[BF] search space={search_space} (iterations={iter_total})")
+        else:
+            iter_total = None
+
         best = (float("-inf"), None)
-        for picks in product(*[cl[1] for cl in cand_lists]):
+        iterator = product(*[cl[1] for cl in cand_lists])
+        if iter_total is not None:
+            iterator = tqdm(iterator, total=iter_total, disable=not verbose)
+        for picks in iterator:
             # 전량 연기 제외
             if not any(pid != -1 for pid in picks):
                 continue

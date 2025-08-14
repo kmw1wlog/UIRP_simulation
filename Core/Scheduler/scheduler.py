@@ -1,10 +1,17 @@
 # Core/Scheduler/scheduler.py
 import datetime
+import math
 from typing import List
 from Model.tasks import Tasks, Task
 from Model.providers import Providers
 from Core.Scheduler.interface import TaskSelector, MetricEvaluator
 from Core.Scheduler.registry import COMBO_REG, DISP_REG
+
+try:
+    from tqdm import tqdm
+except Exception:  # pragma: no cover - fallback when tqdm is unavailable
+    def tqdm(iterable=None, **kwargs):
+        return iterable
 
 Assignment = tuple[str, int, datetime.datetime, datetime.datetime, int]
 
@@ -70,7 +77,9 @@ class BaselineScheduler:
         now = time_start
         if time_end is None:
             time_end = max(t.deadline for t in tasks) + datetime.timedelta(days=1)
-        while now < time_end:
+        steps = math.ceil((time_end - time_start) / self.time_gap)
+        pbar = tqdm(range(steps), disable=not self.verbose)
+        for _ in pbar:
             self._feed(now, tasks)
             self.results += self._schedule_once(now, ps)
             if all(all(st is not None for st, _ in t.scene_allocation_data) for t in tasks):
